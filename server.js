@@ -141,6 +141,12 @@ CREATE TABLE IF NOT EXISTS player_market_values(
 const transferColumns=db.prepare("PRAGMA table_info(transfers)").all().map(x=>x.name);
 if(!transferColumns.includes("offer_message")) db.exec("ALTER TABLE transfers ADD COLUMN offer_message TEXT DEFAULT ''");
 
+const profileColumns=db.prepare("PRAGMA table_info(player_profiles)").all().map(x=>x.name);
+if(!profileColumns.includes("main_position")) db.exec("ALTER TABLE player_profiles ADD COLUMN main_position TEXT DEFAULT ''");
+if(!profileColumns.includes("secondary_position_1")) db.exec("ALTER TABLE player_profiles ADD COLUMN secondary_position_1 TEXT DEFAULT ''");
+if(!profileColumns.includes("secondary_position_2")) db.exec("ALTER TABLE player_profiles ADD COLUMN secondary_position_2 TEXT DEFAULT ''");
+if(!profileColumns.includes("secondary_position_3")) db.exec("ALTER TABLE player_profiles ADD COLUMN secondary_position_3 TEXT DEFAULT ''");
+
 const rosterColumns=db.prepare("PRAGMA table_info(rosters)").all().map(x=>x.name);
 if(!rosterColumns.includes("main_position")) db.exec("ALTER TABLE rosters ADD COLUMN main_position TEXT NOT NULL DEFAULT ''");
 if(!rosterColumns.includes("secondary_position_1")) db.exec("ALTER TABLE rosters ADD COLUMN secondary_position_1 TEXT DEFAULT ''");
@@ -322,6 +328,77 @@ app.post("/api/admin/users/:id/active",requireRole("owner","management","admin")
  if(Number(req.params.id)===req.user.id)return res.status(400).json({error:"Eigenen Account nicht sperren"});
  db.prepare("UPDATE users SET active=? WHERE id=?").run(req.body.active?1:0,req.params.id);res.json({ok:true});
 });
+
+// Vollständige Spielerbearbeitung durch Staff: Accountname, Profil, Free-Agent-Daten,
+// Marktwert und Kaderzuordnung. Rollen bleiben bewusst im separaten Rollen-Management.
+app.get("/api/admin/players/:id",staff,(req,res)=>{
+ const id=Number(req.params.id);
+ const u=db.prepare("SELECT id,ea_name,role,active,created_at FROM users WHERE id=?").get(id);
+ if(!u)return res.status(404).json({error:"Spieler nicht gefunden"});
+ const p=db.prepare("SELECT age,height_cm,weight_kg,position,main_position,secondary_position_1,secondary_position_2,secondary_position_3,bio FROM player_profiles WHERE user_id=?").get(id)||{};
+ const roster=db.prepare(`SELECT r.*,t.name team_name,t.abbreviation,t.status team_status FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=?`).get(id)||null;
+ const fa=db.prepare("SELECT * FROM free_agents WHERE user_id=?").get(id)||null;
+ const market=marketFor(id);
+ const stats=db.prepare(`SELECT ps.id,ps.match_id,ps.goals,ps.assists,ps.clean_sheet,ps.updated_at,m.kickoff,m.status,h.name home_name,a.name away_name,c.name competition_name FROM player_match_stats ps JOIN matches m ON m.id=ps.match_id LEFT JOIN teams h ON h.id=m.home_team_id LEFT JOIN teams a ON a.id=m.away_team_id LEFT JOIN competitions c ON c.id=m.competition_id WHERE ps.player_id=? ORDER BY COALESCE(m.kickoff,m.id) DESC`).all(id);
+ res.json({user:u,profile:p,roster,freeAgent:fa,market,stats});
+});
+app.put("/api/admin/players/:id",staff,async(req,res)=>{
+ const id=Number(req.params.id); const existing=db.prepare("SELECT id FROM users WHERE id=?").get(id);
+ if(!existing)return res.status(404).json({error:"Spieler nicht gefunden"});
+ const eaName=String(req.body.eaName??"").trim();
+ if(!eaName)return res.status(400).json({error:"EA-Name darf nicht leer sein"});
+ const duplicate=db.prepare("SELECT id FROM users WHERE ea_name=? AND id<>?").get(eaName,id);
+ if(duplicate)return res.status(409).json({error:"Dieser EA-Name ist bereits vergeben"});
+ const age=req.body.age===""||req.body.age==null?null:Number(req.body.age);
+ const height=req.body.height_cm===""||req.body.height_cm==null?null:Number(req.body.height_cm);
+ const weight=req.body.weight_kg===""||req.body.weight_kg==null?null:Number(req.body.weight_kg);
+ if(age!==null&&(!Number.isInteger(age)||age<13||age>100))return res.status(400).json({error:"Alter muss zwischen 13 und 100 liegen"});
+ if(height!==null&&(!Number.isInteger(height)||height<100||height>250))return res.status(400).json({error:"Größe muss zwischen 100 und 250 cm liegen"});
+ if(weight!==null&&(!Number.isInteger(weight)||weight<30||weight>250))return res.status(400).json({error:"Gewicht muss zwischen 30 und 250 kg liegen"});
+ const main=String(req.body.mainPosition||req.body.position||"").trim().toUpperCase();
+ const sec=[req.body.secondaryPosition1,req.body.secondaryPosition2,req.body.secondaryPosition3].map(x=>String(x||"").trim().toUpperCase()).filter(Boolean);
+ if(main && sec.includes(main))return res.status(400).json({error:"Hauptposition darf nicht als Nebenposition gewählt werden"});
+ if(new Set(sec).size!==sec.length)return res.status(400).json({error:"Nebenpositionen dürfen nicht doppelt sein"});
+ const active=req.body.active===false||req.body.active==="0"?0:1;
+ const passwordHash=String(req.body.password||"")?await bcrypt.hash(String(req.body.password),12):null;
+ const tx=db.transaction(()=>{
+   db.prepare("UPDATE users SET ea_name=?,active=? WHERE id=?").run(eaName,active,id);
+   db.prepare(`INSERT INTO player_profiles(user_id,age,height_cm,weight_kg,position,main_position,secondary_position_1,secondary_position_2,secondary_position_3,bio) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET age=excluded.age,height_cm=excluded.height_cm,weight_kg=excluded.weight_kg,position=excluded.position,main_position=excluded.main_position,secondary_position_1=excluded.secondary_position_1,secondary_position_2=excluded.secondary_position_2,secondary_position_3=excluded.secondary_position_3,bio=excluded.bio`).run(id,age,height,weight,main,main,sec[0]||"",sec[1]||"",sec[2]||"",String(req.body.bio||"").trim());
+   const teamId=req.body.teamId===""||req.body.teamId==null?null:Number(req.body.teamId);
+   if(teamId===null){ db.prepare("DELETE FROM rosters WHERE user_id=?").run(id); }
+   else {
+     const team=db.prepare("SELECT id FROM teams WHERE id=? AND status='approved'").get(teamId);
+     if(!team) throw new Error("Genehmigtes Team nicht gefunden");
+     const conflict=db.prepare("SELECT user_id FROM rosters WHERE team_id=? AND user_id<>?").all(teamId,id);
+     const shirt=Math.max(1,Math.min(99,Number(req.body.shirtNumber||1)));
+     const existingRoster=db.prepare("SELECT id FROM rosters WHERE user_id=?").get(id);
+     if(existingRoster){db.prepare("UPDATE rosters SET team_id=?,shirt_number=?,main_position=?,secondary_position_1=?,secondary_position_2=? WHERE user_id=?").run(teamId,shirt,main,sec[0]||"",sec[1]||"",id);}
+     else {
+       if(conflict.some(x=>x.user_id===id)) throw new Error("Spieler ist bereits im gewählten Team");
+       db.prepare("INSERT INTO rosters(team_id,user_id,shirt_number,main_position,secondary_position_1,secondary_position_2) VALUES(?,?,?,?,?,?)").run(teamId,id,shirt,main,sec[0]||"",sec[1]||"");
+     }
+   }
+   const faActive=req.body.freeAgentActive?1:0;
+   if(faActive){
+     if(!main)return;
+     db.prepare(`INSERT INTO free_agents(user_id,age,main_position,secondary_position_1,secondary_position_2,secondary_position_3,bio,active,updated_at) VALUES(?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET age=excluded.age,main_position=excluded.main_position,secondary_position_1=excluded.secondary_position_1,secondary_position_2=excluded.secondary_position_2,secondary_position_3=excluded.secondary_position_3,bio=excluded.bio,active=1,updated_at=CURRENT_TIMESTAMP`).run(id,age,main,sec[0]||"",sec[1]||"",sec[2]||"",String(req.body.bio||"").trim());
+   } else { db.prepare("UPDATE free_agents SET active=0,updated_at=CURRENT_TIMESTAMP WHERE user_id=?").run(id); }
+   const manual=req.body.manualValue===""||req.body.manualValue==null?null:Math.max(0,Math.round(Number(req.body.manualValue)));
+   if(manual!==null&&!Number.isFinite(manual))throw new Error("Ungültiger Marktwert");
+   db.prepare(`INSERT INTO player_market_values(user_id,manual_value,note,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET manual_value=excluded.manual_value,note=excluded.note,updated_at=CURRENT_TIMESTAMP`).run(id,manual,String(req.body.marketNote||"").trim());
+   if(passwordHash) db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(passwordHash,id);
+ });
+ try{tx();res.json({ok:true});}catch(e){res.status(400).json({error:e.message||"Spieler konnte nicht gespeichert werden"});}
+});
+app.put("/api/admin/player-stats/:statId",staff,(req,res)=>{
+ const stat=db.prepare("SELECT ps.*,r.main_position,r.secondary_position_1,r.secondary_position_2 FROM player_match_stats ps LEFT JOIN rosters r ON r.user_id=ps.player_id WHERE ps.id=?").get(Number(req.params.statId));
+ if(!stat)return res.status(404).json({error:"Statistik nicht gefunden"});
+ const goals=Math.max(0,Number(req.body.goals||0)); const assists=Math.max(0,Number(req.body.assists||0));
+ const isGk=[stat.main_position,stat.secondary_position_1,stat.secondary_position_2].map(x=>String(x||"").toUpperCase()).includes("TW");
+ const clean=req.body.cleanSheet&&isGk?1:0;
+ db.prepare("UPDATE player_match_stats SET goals=?,assists=?,clean_sheet=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(goals,assists,clean,stat.id); res.json({ok:true});
+});
+app.delete("/api/admin/player-stats/:statId",staff,(req,res)=>{const info=db.prepare("DELETE FROM player_match_stats WHERE id=?").run(Number(req.params.statId));if(!info.changes)return res.status(404).json({error:"Statistik nicht gefunden"});res.json({ok:true});});
 app.post("/api/admin/transfer-windows",staff,(req,res)=>{
  const {startsAt,endsAt,reason}=req.body;if(!startsAt||!endsAt)return res.status(400).json({error:"Zeitraum erforderlich"});
  const info=db.prepare("INSERT INTO transfer_windows(starts_at,ends_at,reason,active) VALUES(?,?,?,1)").run(new Date(startsAt).toISOString(),new Date(endsAt).toISOString(),reason||"");

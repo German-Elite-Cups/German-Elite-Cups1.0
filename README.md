@@ -1,37 +1,23 @@
-# GEC Platform – v6 Free Agents, Co. Manager & Marktwert
+# GERMAN ELITE CUPS – Version 13
 
-## Neu
-- Free-Agent-Bereich mit eigenem Profil:
-  - Name / EA-Name
-  - Alter
-  - 1 Hauptposition Pflicht
-  - bis zu 3 Nebenpositionen optional
-  - persönlicher Bewerbungstext
-- Free Agents können sich selbst bei genehmigten Teams bewerben.
-- Vereinsmanager und Co. Manager können Free Agents Transferangebote mit persönlichem Text senden.
-- Free-Agent-Bewerbungen erscheinen im Team-Bereich und können angenommen/abgelehnt werden. Bei Annahme wird dem Spieler ein Transferangebot geschickt; der Spieler entscheidet final.
-- Vereinsmanager kann einen bestehenden GEC-Account als Co. Manager hinzufügen oder entfernen.
-- Marktwert pro Spieler:
-  - automatisch aus Toren, Vorlagen und Torwart-„Zu Null“ berechnet
-  - Standardformel: Tore × 100.000 € + Vorlagen × 75.000 € + Zu Null × 125.000 €
-  - Staff kann einen manuellen Notfall-Marktwert setzen
-  - leeres manuelles Feld setzt wieder auf automatische Berechnung
-  - Staff kann Match-Scorer weiterhin löschen; der automatische Marktwert wird danach neu berechnet.
+## Staff: vollständige Spielerverwaltung
 
-## Account-Modell
-Ein Benutzer hat einen einzigen GEC-Account und kann gleichzeitig Spieler und Staff sein. Staff-Rollen sind `admin`, `management` oder `owner` und erweitern denselben Spieleraccount.
+Der Staff-Bereich kann Spieler jetzt vollständig bearbeiten:
+- EA-Name / Accountname ändern
+- Passwort zurücksetzen
+- Account aktiv/sperren
+- Alter, Größe, Gewicht und Bio ändern
+- Hauptposition und bis zu 3 Nebenpositionen bearbeiten
+- Team und Trikotnummer verwalten
+- Spieler aus einem Team entfernen
+- Free-Agent-Status und Free-Agent-Daten verwalten
+- manuellen Marktwert und Marktwert-Notiz setzen oder wieder auf automatisch stellen
+- vorhandene Match-Statistiken direkt im Spielereditor bearbeiten oder löschen
 
-## Start
-```bash
-npm install
-npm start
-```
-Dann `http://localhost:3000` öffnen.
+Die Rollenverwaltung bleibt separat: Rollen werden weiterhin nur über das Rollen-Management geändert.
 
-Für Produktion sollten insbesondere `SESSION_SECRET`, HTTPS, Backup/DB und Hosting-Konfiguration angepasst werden.
+## Railway
 
+Den Inhalt dieses Pakets in das bestehende GitHub-Repository laden und committen. Railway deployt den neuen Commit automatisch.
 
-## GEC v9 Design
-Dark but colorful esports visual system: anthracite backgrounds, lighter cards,
-GEC red, gold/yellow accents, white typography, responsive multi-column grids,
-subtle gradients and glow. The site avoids an all-black or all-white appearance.
+Die bestehende Railway-Datenbank / das Volume **nicht löschen**. Die Version enthält Migrationen, damit die neuen Profilfelder in einer vorhandenen SQLite-Datenbank nachgerüstet werden.

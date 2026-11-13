@@ -160,14 +160,34 @@ footer{color:#9aa5b1;border-top-color:#39434f}
 <div class="modal" id="editorModal"><div class="box"><button class="close" onclick="$("#editorModal").classList.remove("open")">×</button><div id="editorContent"></div></div></div>
 <script>
 const $=s=>document.querySelector(s), modal=$("#modal");
-async function api(url,opt={}){const r=await fetch(url,{headers:{"Content-Type":"application/json",...(opt.headers||{})},...opt});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.error||"Fehler");return d}
+async function api(url,opt={}){
+ const cfg={credentials:"same-origin",headers:{"Content-Type":"application/json",...(opt.headers||{})},...opt};
+ const r=await fetch(url,cfg);
+ let d={};try{d=await r.json()}catch{}
+ if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);
+ return d
+}
 function closeModal(){modal.classList.remove("open")}
 function openModal(html){$("#modalContent").innerHTML=html;modal.classList.add("open")}
 function register(){openModal(`<h2>GEC Spieler registrieren</h2><p class="muted">Spieler erstellen ihren eigenen GEC-Account. Staff-Accounts werden aus Sicherheitsgründen vom Owner angelegt.</p><form id="registerForm" class="form"><div class="field"><label>EA-Name</label><input name="eaName" required autocomplete="username"></div><div class="field"><label>Passwort</label><input name="password" type="password" minlength="8" required autocomplete="new-password"></div><button class="btn red" type="submit">Spielerkonto erstellen</button></form>`);$("#registerForm").onsubmit=async e=>{e.preventDefault();try{await api("/api/register",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});closeModal();await refresh()}catch(x){alert(x.message)}}}
 function login(){openAuth("player")}
 function openAuth(mode="player"){
  openModal(`<h2>GEC Anmeldung</h2><div class="actions" style="margin-top:0;margin-bottom:16px"><button id="playerTab" class="btn ${mode==="player"?"primary":""}" type="button" onclick="openAuth('player')">Spieler</button><button id="staffTab" class="btn ${mode==="staff"?"gold":""}" type="button" onclick="openAuth('staff')">Staff</button></div>${mode==="staff"?`<div class="notice" style="margin-bottom:14px">Staff nutzt ebenfalls den GEC-Account. Staff-Accounts werden vom Owner/Management angelegt und anschließend hier eingeloggt.</div>`:`<div class="notice" style="margin-bottom:14px">Spieler können sich hier registrieren und direkt danach ein Team anmelden.</div>`}<form id="loginForm" class="form"><div class="field"><label>EA-Name</label><input name="eaName" required autocomplete="username"></div><div class="field"><label>Passwort</label><input name="password" type="password" required autocomplete="current-password"></div><button class="btn ${mode==="staff"?"gold":"primary"}" type="submit">${mode==="staff"?"Als Staff anmelden":"Als Spieler anmelden"}</button></form>${mode==="player"?`<button class="btn red" style="margin-top:12px;width:100%" type="button" onclick="register()">Noch kein Spieler-Konto? Jetzt registrieren</button>`:""}`);
- $("#loginForm").onsubmit=async e=>{e.preventDefault();try{await api("/api/login",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});closeModal();await refresh()}catch(x){alert(x.message)}}
+ $("#loginForm").onsubmit=async e=>{
+ e.preventDefault();
+ const btn=e.target.querySelector('button[type="submit"]');
+ btn.disabled=true;btn.textContent="Anmeldung läuft …";
+ try{
+  await api("/api/login",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});
+  await refresh();
+  closeModal();
+ }catch(x){
+  alert(x.message||"Anmeldung fehlgeschlagen");
+ }finally{
+  btn.disabled=false;
+  btn.textContent=mode==="staff"?"Als Staff anmelden":"Als Spieler anmelden";
+ }
+}
 }
 function setup(){openModal(`<h2>Owner einrichten</h2><p class="muted">Erster Start: Dieser Account wird automatisch zum einzigen Owner.</p><form id="setup" class="form"><div class="field"><label>Owner EA-Name</label><input name="eaName" required></div><div class="field"><label>Passwort (mind. 8 Zeichen)</label><input name="password" type="password" minlength="8" required></div><button class="btn red">Owner erstellen</button></form>`);$("#setup").onsubmit=async e=>{e.preventDefault();try{await api("/api/setup",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});closeModal();await refresh()}catch(x){alert(x.message)}}}
 function openTeam(){openModal(`<h2>Team anmelden</h2><p class="muted">Nur registrierte Spieler können ein Team erstellen. Das Team wartet danach auf Staff-Genehmigung.</p><form id="teamForm" class="form" enctype="multipart/form-data"><div class="field"><label>Teamname</label><input name="name" required></div><div class="field"><label>3-Buchstaben-Abkürzung</label><input name="abbreviation" maxlength="3" minlength="3" required></div><div class="field"><label>EA-Teamname</label><input name="eaName" required></div><div class="field"><label>Wappen</label><input name="crest" type="file" accept="image/png,image/jpeg,image/webp" required></div><div class="field"><label>Beschreibung</label><input name="description"></div><button class="btn gold">Anmeldung senden</button></form>`);$("#teamForm").onsubmit=async e=>{e.preventDefault();try{const r=await fetch("/api/teams",{method:"POST",body:new FormData(e.target)});const d=await r.json();if(!r.ok)throw new Error(d.error);closeModal();alert("Team eingereicht. Nach Staff-Genehmigung wird es öffentlich.");}catch(x){alert(x.message)}}}

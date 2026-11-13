@@ -7,6 +7,9 @@ const path=require("path");
 const fs=require("fs");
 
 const app=express();
+// Railway läuft hinter einem Reverse Proxy. Damit Express HTTPS korrekt erkennt
+// und Secure-Session-Cookies an den Browser senden kann, Proxy vertrauen.
+app.set("trust proxy", 1);
 const PORT=process.env.PORT||3000;
 const DB=process.env.GEC_DB||path.join(__dirname,"gec.sqlite");
 const db=new Database(DB);
@@ -149,7 +152,8 @@ app.use(session({
  secret:process.env.SESSION_SECRET||"CHANGE_THIS_IN_PRODUCTION",
  resave:false,
  saveUninitialized:false,
- cookie:{httpOnly:true,sameSite:"lax",secure:process.env.NODE_ENV==="production",maxAge:1000*60*60*24*7}
+ proxy:true,
+ cookie:{httpOnly:true,sameSite:"lax",secure:"auto",maxAge:1000*60*60*24*7}
 }));
 app.use("/uploads",express.static(path.join(__dirname,"public/uploads")));
 app.use(express.static(path.join(__dirname,"public")));
@@ -200,9 +204,15 @@ app.post("/api/register",async(req,res)=>{
  }catch(e){res.status(409).json({error:"EA-Name ist bereits registriert"})}
 });
 app.post("/api/login",async(req,res)=>{
- const u=db.prepare("SELECT * FROM users WHERE ea_name=?").get(String(req.body.eaName||"").trim());
- if(!u||!u.active||!(await bcrypt.compare(String(req.body.password||""),u.password_hash)))return res.status(401).json({error:"Login fehlgeschlagen"});
- req.session.userId=u.id;res.json({ok:true,user:currentUser(req)});
+ const eaName=String(req.body.eaName||"").trim();
+ const password=String(req.body.password||"");
+ const u=db.prepare("SELECT * FROM users WHERE ea_name=?").get(eaName);
+ if(!u||!u.active||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:"Login fehlgeschlagen"});
+ req.session.userId=u.id;
+ req.session.save(err=>{
+  if(err)return res.status(500).json({error:"Sitzung konnte nicht gespeichert werden"});
+  res.json({ok:true,user:currentUser(req)});
+ });
 });
 app.post("/api/logout",(req,res)=>req.session.destroy(()=>res.json({ok:true})));
 

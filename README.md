@@ -29,3 +29,9 @@ npm start
 Dann `http://localhost:3000` öffnen.
 
 Für Produktion sollten insbesondere `SESSION_SECRET`, HTTPS, Backup/DB und Hosting-Konfiguration angepasst werden.
+
+
+## GEC v9 Design
+Dark but colorful esports visual system: anthracite backgrounds, lighter cards,
+GEC red, gold/yellow accents, white typography, responsive multi-column grids,
+subtle gradients and glow. The site avoids an all-black or all-white appearance.

@@ -1,23 +1,13 @@
-# GERMAN ELITE CUPS – Version 13
+# GEC Platform – v14
 
-## Staff: vollständige Spielerverwaltung
-
-Der Staff-Bereich kann Spieler jetzt vollständig bearbeiten:
-- EA-Name / Accountname ändern
-- Passwort zurücksetzen
-- Account aktiv/sperren
-- Alter, Größe, Gewicht und Bio ändern
-- Hauptposition und bis zu 3 Nebenpositionen bearbeiten
-- Team und Trikotnummer verwalten
-- Spieler aus einem Team entfernen
-- Free-Agent-Status und Free-Agent-Daten verwalten
-- manuellen Marktwert und Marktwert-Notiz setzen oder wieder auf automatisch stellen
-- vorhandene Match-Statistiken direkt im Spielereditor bearbeiten oder löschen
-
-Die Rollenverwaltung bleibt separat: Rollen werden weiterhin nur über das Rollen-Management geändert.
+## Updates
+- X/close button for editor modals fixed (`closeEditor()` is now defined).
+- ESC closes normal modals, editor modals and the Staff Center.
+- Express sessions now use a persistent SQLite session store (`gec-sessions.sqlite`) instead of the default in-memory store.
+- Session lifetime is 30 days.
+- Existing `GEC_DB` directory is reused for the session database so a Railway persistent volume keeps login sessions across deploy/restart.
+- `SESSION_SECRET` should be set as a stable Railway environment variable.
 
 ## Railway
-
-Den Inhalt dieses Pakets in das bestehende GitHub-Repository laden und committen. Railway deployt den neuen Commit automatisch.
-
-Die bestehende Railway-Datenbank / das Volume **nicht löschen**. Die Version enthält Migrationen, damit die neuen Profilfelder in einer vorhandenen SQLite-Datenbank nachgerüstet werden.
+Keep the existing Railway volume/database. Do not delete or recreate the GEC database volume when deploying this version.
+Set a stable `SESSION_SECRET` in Railway Variables. If `GEC_DB` points to a persistent volume, the session database is stored alongside it by default.

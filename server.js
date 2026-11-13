@@ -1,5 +1,6 @@
 const express=require("express");
 const session=require("express-session");
+const SQLiteStore=require("connect-sqlite3")(session);
 const bcrypt=require("bcryptjs");
 const Database=require("better-sqlite3");
 const multer=require("multer");
@@ -154,12 +155,14 @@ if(!rosterColumns.includes("secondary_position_2")) db.exec("ALTER TABLE rosters
 
 app.use(express.urlencoded({extended:true}));
 app.use(express.json());
+const sessionDb=process.env.GEC_SESSION_DB||path.join(path.dirname(DB),"gec-sessions.sqlite");
 app.use(session({
  secret:process.env.SESSION_SECRET||"CHANGE_THIS_IN_PRODUCTION",
+ store:new SQLiteStore({db:sessionDb,dir:path.dirname(sessionDb),table:"sessions",concurrentDB:true}),
  resave:false,
  saveUninitialized:false,
  proxy:true,
- cookie:{httpOnly:true,sameSite:"lax",secure:"auto",maxAge:1000*60*60*24*7}
+ cookie:{httpOnly:true,sameSite:"lax",secure:"auto",maxAge:1000*60*60*24*30}
 }));
 app.use("/uploads",express.static(path.join(__dirname,"public/uploads")));
 app.use(express.static(path.join(__dirname,"public")));

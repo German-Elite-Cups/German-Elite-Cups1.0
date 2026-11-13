@@ -345,6 +345,25 @@ app.patch("/api/admin/matches/:id",staff,(req,res)=>{
  if(!sets.length)return res.json({ok:true});vals.push(req.params.id);db.prepare("UPDATE matches SET "+sets.join(",")+" WHERE id=?").run(...vals);res.json({ok:true});
 });
 
+app.get("/api/players",(req,res)=>{
+ const q=String(req.query.q||"").trim();
+ const rows=db.prepare(`
+ SELECT u.id,u.ea_name,u.role,p.age,p.height_cm,p.weight_kg,p.position,p.bio,
+        r.team_id,r.shirt_number,r.main_position,r.secondary_position_1,r.secondary_position_2,
+        t.name team_name,t.abbreviation team_abbreviation,t.crest team_crest
+ FROM users u
+ LEFT JOIN player_profiles p ON p.user_id=u.id
+ LEFT JOIN rosters r ON r.user_id=u.id
+ LEFT JOIN teams t ON t.id=r.team_id AND t.status='approved'
+ WHERE u.active=1 AND (?='' OR LOWER(u.ea_name) LIKE LOWER(?) OR LOWER(COALESCE(t.name,'')) LIKE LOWER(?))
+ ORDER BY u.ea_name COLLATE NOCASE`).all(q,q?`%${q}%`:"",q?`%${q}%`:"");
+ const grouped=new Map();
+ for(const x of rows){
+  if(!grouped.has(x.id))grouped.set(x.id,{id:x.id,ea_name:x.ea_name,role:x.role,age:x.age,height_cm:x.height_cm,weight_kg:x.weight_kg,position:x.position,bio:x.bio,team:null});
+  if(x.team_id&&!grouped.get(x.id).team)grouped.get(x.id).team={id:x.team_id,name:x.team_name,abbreviation:x.team_abbreviation,crest:x.team_crest,shirt_number:x.shirt_number,main_position:x.main_position,secondary_position_1:x.secondary_position_1,secondary_position_2:x.secondary_position_2};
+ }
+ res.json(Array.from(grouped.values()).map(x=>({...x,market:marketFor(x.id)})));
+});
 app.get("/api/profile/:id",(req,res)=>{
  const id=Number(req.params.id);
  const u=db.prepare("SELECT id,ea_name,role FROM users WHERE id=? AND active=1").get(id);

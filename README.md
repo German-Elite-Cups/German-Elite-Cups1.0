@@ -1,11 +1,10 @@
-# GEC Platform v17 – Railway Build Fix
+# GEC Platform v18
 
-## Fix
-- Removed `connect-sqlite3`, which can fail during `npm install` on Railway/modern Node runtimes.
-- Added a persistent SQLite session store implemented with the already-installed `better-sqlite3`.
-- Sessions remain valid for 30 days and survive app restarts/deploys as long as the same Railway database/volume is kept.
-- Keep a stable `SESSION_SECRET` Railway variable.
+## Staff can create teams
+- Owner, Management and Admin can create teams.
+- Staff-created teams are immediately approved and publicly visible.
+- Staff can create a team even if their account already belongs to a roster.
+- Regular players keep the existing one-team restriction and approval workflow.
 
-## Deploy
-Push/replace these files in the GitHub repository and let Railway redeploy.
-Do not delete the existing Railway database/volume.
+## Railway
+Keep the existing database/volume and deploy this version over the existing installation.

@@ -280,12 +280,14 @@ app.get("/api/teams",(req,res)=>res.json(db.prepare("SELECT id,name,abbreviation
 app.post("/api/teams",requireLogin,upload.single("crest"),(req,res)=>{
  const {name,abbreviation,eaName,description}=req.body;
  if(!name||!eaName||!abbreviation||!/^[A-Za-z]{3}$/.test(String(abbreviation).trim()))return res.status(400).json({error:"Teamname, EA-Name und genau 3 Buchstaben (A-Z) sind erforderlich"});
+ const isStaff=["owner","management","admin"].includes(req.user.role);
  const existing=db.prepare("SELECT id FROM rosters WHERE user_id=?").get(req.user.id);
- if(existing)return res.status(409).json({error:"Ein Spieler kann maximal einem Team angehören"});
+ if(existing && !isStaff)return res.status(409).json({error:"Ein Spieler kann maximal einem Team angehören"});
  try{
-  const info=db.prepare("INSERT INTO teams(name,abbreviation,ea_name,crest,description,status,owner_id) VALUES(?,?,?,?,?,'pending',?)")
-   .run(name.trim(),abbreviation.toUpperCase(),eaName.trim(),req.file?"/uploads/"+req.file.filename:null,description||"",req.user.id);
-  res.json({ok:true,id:info.lastInsertRowid,status:"pending"});
+  const status=isStaff ? "approved" : "pending";
+  const info=db.prepare("INSERT INTO teams(name,abbreviation,ea_name,crest,description,status,owner_id) VALUES(?,?,?,?,?,?,?)")
+   .run(name.trim(),abbreviation.toUpperCase(),eaName.trim(),req.file?"/uploads/"+req.file.filename:null,description||"",status,req.user.id);
+  res.json({ok:true,id:info.lastInsertRowid,status,staffCreated:isStaff});
  }catch(e){res.status(400).json({error:e.message.includes("UNIQUE")?"Abkürzung bereits vergeben":"Team konnte nicht erstellt werden"})}
 });
 

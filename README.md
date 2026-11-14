@@ -1,14 +1,11 @@
-# GEC Platform v15
+# GEC Platform v17 – Railway Build Fix
 
-## Behoben / geändert
-- Team-Anmeldung: Abkürzung wird sauber auf genau 3 A-Z-Buchstaben validiert.
-- Team-Wappen: PNG/JPG/WEBP wird robust validiert; verständliche Fehlermeldung erscheint direkt im Team-Fenster.
-- Staff-Bereich: Nur Owner/Admin/Management bekommen nach dem Login den sichtbaren STAFF-Button. Member sehen den Staff-Bereich nicht.
-- Ein gemeinsamer Login bleibt bestehen: ein Account kann Spieler und Staff sein.
-- X-Schließen: zentrale Close-Logik für Login-/Modal-/Editor-Fenster plus ESC und Klick auf den Hintergrund.
-- Navigation: Start, Cups, Ligen, Teams, Spieler, Transfers, Free Agents und Ergebnisse sind getrennte Tabs/Ansichten. Es wird jeweils nur der gewählte Bereich angezeigt.
-- Startseite wurde farbiger und stärker als Esports-/Sportportal aufgebaut; Karten und Bereiche nutzen unterschiedliche Akzentfarben.
-- Bestehende Login-Session-Infrastruktur aus v14 bleibt erhalten.
+## Fix
+- Removed `connect-sqlite3`, which can fail during `npm install` on Railway/modern Node runtimes.
+- Added a persistent SQLite session store implemented with the already-installed `better-sqlite3`.
+- Sessions remain valid for 30 days and survive app restarts/deploys as long as the same Railway database/volume is kept.
+- Keep a stable `SESSION_SECRET` Railway variable.
 
-## Railway
-Bestehende Datenbank und Railway-Volume behalten. Nicht löschen oder neu anlegen.
+## Deploy
+Push/replace these files in the GitHub repository and let Railway redeploy.
+Do not delete the existing Railway database/volume.

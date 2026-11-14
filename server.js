@@ -1,6 +1,5 @@
 const express=require("express");
 const session=require("express-session");
-const SQLiteStore=require("connect-sqlite3")(session);
 const bcrypt=require("bcryptjs");
 const Database=require("better-sqlite3");
 const multer=require("multer");
@@ -155,15 +154,61 @@ if(!rosterColumns.includes("secondary_position_2")) db.exec("ALTER TABLE rosters
 
 app.use(express.urlencoded({extended:true}));
 app.use(express.json());
-const sessionDb=process.env.GEC_SESSION_DB||path.join(path.dirname(DB),"gec-sessions.sqlite");
-app.use(session({
- secret:process.env.SESSION_SECRET||"CHANGE_THIS_IN_PRODUCTION",
- store:new SQLiteStore({db:sessionDb,dir:path.dirname(sessionDb),table:"sessions",concurrentDB:true}),
- resave:false,
- saveUninitialized:false,
- proxy:true,
- cookie:{httpOnly:true,sameSite:"lax",secure:"auto",maxAge:1000*60*60*24*30}
-}));
+// Persistente Session ohne natives connect-sqlite3-Modul.
+ // Railway kann dadurch normal mit npm install bauen; der Session-Store
+ // verwendet dieselbe better-sqlite3-Datenbank wie die GEC-Daten.
+ class SQLiteSessionStore extends session.Store {
+   constructor(database){
+     super();
+     this.db=database;
+     this.db.exec(`CREATE TABLE IF NOT EXISTS sessions (
+       sid TEXT PRIMARY KEY,
+       sess TEXT NOT NULL,
+       expire INTEGER NOT NULL
+     )`);
+   }
+   get(sid, cb){
+     try {
+       const row=this.db.prepare("SELECT sess, expire FROM sessions WHERE sid=?").get(sid);
+       if(!row){ return cb(null,null); }
+       if(row.expire <= Date.now()){
+         this.db.prepare("DELETE FROM sessions WHERE sid=?").run(sid);
+         return cb(null,null);
+       }
+       return cb(null, JSON.parse(row.sess));
+     } catch(e){ return cb(e); }
+   }
+   set(sid, sess, cb){
+     try {
+       const expire=Date.now() + (sess.cookie && sess.cookie.maxAge ? sess.cookie.maxAge : 30*24*60*60*1000);
+       this.db.prepare(`INSERT INTO sessions(sid,sess,expire) VALUES(?,?,?)
+         ON CONFLICT(sid) DO UPDATE SET sess=excluded.sess, expire=excluded.expire`)
+         .run(sid, JSON.stringify(sess), expire);
+       return cb && cb(null);
+     } catch(e){ return cb && cb(e); }
+   }
+   destroy(sid, cb){
+     try { this.db.prepare("DELETE FROM sessions WHERE sid=?").run(sid); return cb && cb(null); }
+     catch(e){ return cb && cb(e); }
+   }
+   touch(sid, sess, cb){
+     try {
+       const expire=Date.now() + (sess.cookie && sess.cookie.maxAge ? sess.cookie.maxAge : 30*24*60*60*1000);
+       this.db.prepare("UPDATE sessions SET sess=?, expire=? WHERE sid=?")
+         .run(JSON.stringify(sess), expire, sid);
+       return cb && cb(null);
+     } catch(e){ return cb && cb(e); }
+   }
+ }
+
+ app.use(session({
+   secret:process.env.SESSION_SECRET||"CHANGE_THIS_IN_PRODUCTION",
+   store:new SQLiteSessionStore(db),
+   resave:false,
+   saveUninitialized:false,
+   proxy:true,
+   cookie:{httpOnly:true,sameSite:"lax",secure:"auto",maxAge:1000*60*60*24*30}
+ }));
 app.use("/uploads",express.static(path.join(__dirname,"public/uploads")));
 app.use(express.static(path.join(__dirname,"public")));
 

@@ -1,10 +1,21 @@
-# GEC Platform v18
+# GEC Platform v20 – Persistent data and safe updates
 
-## Staff can create teams
-- Owner, Management and Admin can create teams.
-- Staff-created teams are immediately approved and publicly visible.
-- Staff can create a team even if their account already belongs to a roster.
-- Regular players keep the existing one-team restriction and approval workflow.
+## Daten bleiben bei Updates erhalten
+- Der Server führt **keine DROP/DELETE/RESET-Operationen beim Start** aus.
+- Tabellen werden mit `CREATE TABLE IF NOT EXISTS` angelegt. Bestehende Daten bleiben erhalten.
+- Neue Felder werden ausschließlich per additive Migration (`ALTER TABLE ... ADD COLUMN`) ergänzt.
+- Die Datenbank wird vor dem Start der Anwendung in `backups/` gesichert (bis zu 10 Backups).
+- Sessions bleiben in derselben Datenbank erhalten.
 
-## Railway
-Keep the existing database/volume and deploy this version over the existing installation.
+## Railway – einmalig wichtig
+Für echte Persistenz über Deployments muss ein Railway Volume verwendet werden. Empfohlen:
+- Volume Mount Path: `/data`
+- Variable `GEC_DATA_DIR=/data`
+- Variable `GEC_DB=/data/gec.sqlite`
+- Variable `GEC_UPLOAD_DIR=/data/uploads`
+- Variable `SESSION_SECRET` dauerhaft setzen und bei Updates **nicht ändern**.
+
+Wenn diese Variablen gesetzt sind, liegen Datenbank, Spieler/Teams/Stats und hochgeladene Wappen außerhalb des wechselnden App-Deployments. Beim Update wird nur der Code ersetzt; die Daten bleiben im Volume.
+
+## Wichtig
+Das Railway Volume nicht löschen. Auch `gec.sqlite` nicht manuell löschen.

@@ -7,13 +7,34 @@ const path=require("path");
 const fs=require("fs");
 
 const app=express();
-// Railway läuft hinter einem Reverse Proxy. Damit Express HTTPS korrekt erkennt
-// und Secure-Session-Cookies an den Browser senden kann, Proxy vertrauen.
+// Persistent data: on Railway, set GEC_DATA_DIR to the mounted Volume path (for example /data).
+// If a local database from an older installation exists, keep using it when no persistent path is configured.
 app.set("trust proxy", 1);
 const PORT=process.env.PORT||3000;
-const DB=process.env.GEC_DB||path.join(__dirname,"gec.sqlite");
+const configuredDb=process.env.GEC_DB;
+const defaultDataDir=process.env.GEC_DATA_DIR || (fs.existsSync("/data") ? "/data" : path.join(__dirname,"data"));
+const DB=configuredDb || (fs.existsSync(path.join(__dirname,"gec.sqlite")) ? path.join(__dirname,"gec.sqlite") : path.join(defaultDataDir,"gec.sqlite"));
+const UPLOAD_DIR=process.env.GEC_UPLOAD_DIR || path.join(path.dirname(DB),"uploads");
+fs.mkdirSync(path.dirname(DB),{recursive:true});
+fs.mkdirSync(UPLOAD_DIR,{recursive:true});
 const db=new Database(DB);
 db.pragma("foreign_keys = ON");
+// Never drop/reset application data during startup. Migrations are additive only.
+db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+function migrationApplied(version){ return !!db.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get(version); }
+function markMigration(version){ db.prepare("INSERT OR IGNORE INTO schema_migrations(version) VALUES(?)").run(version); }
+function backupDatabase(){
+  if(process.env.DISABLE_DB_BACKUP === "1") return;
+  const backupDir=path.join(path.dirname(DB),"backups");
+  try{
+    fs.mkdirSync(backupDir,{recursive:true});
+    const stamp=new Date().toISOString().replace(/[:.]/g,"-");
+    db.backup(path.join(backupDir,`gec-${stamp}.sqlite`)).catch(()=>{});
+    const files=fs.readdirSync(backupDir).filter(f=>/^gec-.*\.sqlite$/.test(f)).sort();
+    for(const f of files.slice(0,Math.max(0,files.length-10))){ try{fs.unlinkSync(path.join(backupDir,f));}catch{} }
+  }catch{}
+}
+backupDatabase();
 db.exec(`
 CREATE TABLE IF NOT EXISTS users(
  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +173,9 @@ if(!rosterColumns.includes("main_position")) db.exec("ALTER TABLE rosters ADD CO
 if(!rosterColumns.includes("secondary_position_1")) db.exec("ALTER TABLE rosters ADD COLUMN secondary_position_1 TEXT DEFAULT ''");
 if(!rosterColumns.includes("secondary_position_2")) db.exec("ALTER TABLE rosters ADD COLUMN secondary_position_2 TEXT DEFAULT ''");
 
+// Migration 1: current schema is compatible with all previous GEC databases.
+if(!migrationApplied(1)) markMigration(1);
+
 app.use(express.urlencoded({extended:true}));
 app.use(express.json());
 // Persistente Session ohne natives connect-sqlite3-Modul.
@@ -214,7 +238,7 @@ app.use(express.static(path.join(__dirname,"public")));
 
 const upload=multer({
  storage:multer.diskStorage({
-  destination:(req,file,cb)=>cb(null,path.join(__dirname,"public/uploads")),
+  destination:(req,file,cb)=>cb(null,UPLOAD_DIR),
   filename:(req,file,cb)=>cb(null,Date.now()+"-"+Math.random().toString(36).slice(2)+path.extname(file.originalname).toLowerCase())
  }),
  limits:{fileSize:3*1024*1024},
@@ -288,7 +312,13 @@ app.post("/api/teams",requireLogin,upload.single("crest"),(req,res)=>{
   const info=db.prepare("INSERT INTO teams(name,abbreviation,ea_name,crest,description,status,owner_id) VALUES(?,?,?,?,?,?,?)")
    .run(name.trim(),abbreviation.toUpperCase(),eaName.trim(),req.file?"/uploads/"+req.file.filename:null,description||"",status,req.user.id);
   res.json({ok:true,id:info.lastInsertRowid,status,staffCreated:isStaff});
- }catch(e){res.status(400).json({error:e.message.includes("UNIQUE")?"Abkürzung bereits vergeben":"Team konnte nicht erstellt werden"})}
+ }catch(e){
+  console.error("Team creation failed:",e);
+  const msg=String(e.message||"");
+  if(msg.includes("UNIQUE")) return res.status(409).json({error:"Diese 3-Buchstaben-Abkürzung ist bereits vergeben."});
+  if(msg.includes("FOREIGN KEY")) return res.status(400).json({error:"Der angemeldete Account ist nicht korrekt mit der Spielerdatenbank verknüpft."});
+  return res.status(500).json({error:"Team konnte nicht erstellt werden. Bitte später erneut versuchen."});
+ }
 });
 
 app.get("/api/teams/:id/managers",(req,res)=>{ const team=db.prepare("SELECT id,owner_id FROM teams WHERE id=?").get(req.params.id); if(!team)return res.status(404).json({error:"Team nicht gefunden"}); const owner=db.prepare("SELECT id,ea_name FROM users WHERE id=?").get(team.owner_id); const coManagers=db.prepare("SELECT tm.user_id,tm.role,u.ea_name FROM team_managers tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=?").all(req.params.id); res.json({owner,coManagers}); });

@@ -1,13 +1,14 @@
-# GEC Platform – v14
+# GEC Platform v15
 
-## Updates
-- X/close button for editor modals fixed (`closeEditor()` is now defined).
-- ESC closes normal modals, editor modals and the Staff Center.
-- Express sessions now use a persistent SQLite session store (`gec-sessions.sqlite`) instead of the default in-memory store.
-- Session lifetime is 30 days.
-- Existing `GEC_DB` directory is reused for the session database so a Railway persistent volume keeps login sessions across deploy/restart.
-- `SESSION_SECRET` should be set as a stable Railway environment variable.
+## Behoben / geändert
+- Team-Anmeldung: Abkürzung wird sauber auf genau 3 A-Z-Buchstaben validiert.
+- Team-Wappen: PNG/JPG/WEBP wird robust validiert; verständliche Fehlermeldung erscheint direkt im Team-Fenster.
+- Staff-Bereich: Nur Owner/Admin/Management bekommen nach dem Login den sichtbaren STAFF-Button. Member sehen den Staff-Bereich nicht.
+- Ein gemeinsamer Login bleibt bestehen: ein Account kann Spieler und Staff sein.
+- X-Schließen: zentrale Close-Logik für Login-/Modal-/Editor-Fenster plus ESC und Klick auf den Hintergrund.
+- Navigation: Start, Cups, Ligen, Teams, Spieler, Transfers, Free Agents und Ergebnisse sind getrennte Tabs/Ansichten. Es wird jeweils nur der gewählte Bereich angezeigt.
+- Startseite wurde farbiger und stärker als Esports-/Sportportal aufgebaut; Karten und Bereiche nutzen unterschiedliche Akzentfarben.
+- Bestehende Login-Session-Infrastruktur aus v14 bleibt erhalten.
 
 ## Railway
-Keep the existing Railway volume/database. Do not delete or recreate the GEC database volume when deploying this version.
-Set a stable `SESSION_SECRET` in Railway Variables. If `GEC_DB` points to a persistent volume, the session database is stored alongside it by default.
+Bestehende Datenbank und Railway-Volume behalten. Nicht löschen oder neu anlegen.

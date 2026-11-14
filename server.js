@@ -234,7 +234,7 @@ app.get("/api/stats",(req,res)=>{
 app.get("/api/teams",(req,res)=>res.json(db.prepare("SELECT id,name,abbreviation,ea_name,crest,status,owner_id FROM teams WHERE status='approved' ORDER BY name").all()));
 app.post("/api/teams",requireLogin,upload.single("crest"),(req,res)=>{
  const {name,abbreviation,eaName,description}=req.body;
- if(!name||!eaName||!abbreviation||abbreviation.length!==3)return res.status(400).json({error:"Teamname, EA-Name und genau 3 Buchstaben sind erforderlich"});
+ if(!name||!eaName||!abbreviation||!/^[A-Za-z]{3}$/.test(String(abbreviation).trim()))return res.status(400).json({error:"Teamname, EA-Name und genau 3 Buchstaben (A-Z) sind erforderlich"});
  const existing=db.prepare("SELECT id FROM rosters WHERE user_id=?").get(req.user.id);
  if(existing)return res.status(409).json({error:"Ein Spieler kann maximal einem Team angehören"});
  try{

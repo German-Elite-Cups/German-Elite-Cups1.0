@@ -584,6 +584,30 @@ app.post("/api/admin/competitions",staff,(req,res)=>{
  const {type,name,description,startDate}=req.body;if(!["cup","league"].includes(type)||!name)return res.status(400).json({error:"Typ und Name erforderlich"});
  const info=db.prepare("INSERT INTO competitions(type,name,description,start_date) VALUES(?,?,?,?)").run(type,name,description||"",startDate||null);res.json({ok:true,id:info.lastInsertRowid});
 });
+app.put("/api/admin/competitions/:id",staff,(req,res)=>{
+ const id=Number(req.params.id);
+ const existing=db.prepare("SELECT * FROM competitions WHERE id=?").get(id);
+ if(!existing)return res.status(404).json({error:"Wettbewerb nicht gefunden"});
+ const type=String(req.body.type||existing.type);
+ const name=String(req.body.name||"").trim();
+ if(!["cup","league"].includes(type)||!name)return res.status(400).json({error:"Typ und Name erforderlich"});
+ db.prepare("UPDATE competitions SET type=?,name=?,description=?,start_date=?,status=? WHERE id=?").run(type,name,String(req.body.description||""),req.body.startDate||null,String(req.body.status||existing.status),id);
+ res.json({ok:true});
+});
+app.delete("/api/admin/competitions/:id",staff,(req,res)=>{
+ const id=Number(req.params.id);
+ const comp=db.prepare("SELECT * FROM competitions WHERE id=?").get(id);
+ if(!comp)return res.status(404).json({error:"Wettbewerb nicht gefunden"});
+ const tx=db.transaction(()=>{
+   db.prepare("DELETE FROM player_match_stats WHERE match_id IN (SELECT id FROM matches WHERE competition_id=?)").run(id);
+   db.prepare("DELETE FROM matches WHERE competition_id=?").run(id);
+   db.prepare("DELETE FROM competition_teams WHERE competition_id=?").run(id);
+   db.prepare("DELETE FROM cup_draws WHERE competition_id=?").run(id);
+   db.prepare("DELETE FROM competitions WHERE id=?").run(id);
+ });
+ tx();
+ res.json({ok:true});
+});
 app.post("/api/admin/matches",staff,(req,res)=>{
  const {competitionId,homeTeamId,awayTeamId,kickoff}=req.body;
  const info=db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,kickoff) VALUES(?,?,?,?)").run(competitionId||null,homeTeamId||null,awayTeamId||null,kickoff||null);

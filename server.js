@@ -190,6 +190,10 @@ if(!profileColumns.includes("secondary_position_1")) db.exec("ALTER TABLE player
 if(!profileColumns.includes("secondary_position_2")) db.exec("ALTER TABLE player_profiles ADD COLUMN secondary_position_2 TEXT DEFAULT ''");
 if(!profileColumns.includes("secondary_position_3")) db.exec("ALTER TABLE player_profiles ADD COLUMN secondary_position_3 TEXT DEFAULT ''");
 
+const competitionColumns=db.prepare("PRAGMA table_info(competitions)").all().map(x=>x.name);
+if(!competitionColumns.includes("format")) db.exec("ALTER TABLE competitions ADD COLUMN format TEXT NOT NULL DEFAULT 'knockout'");
+if(!competitionColumns.includes("group_size")) db.exec("ALTER TABLE competitions ADD COLUMN group_size INTEGER NOT NULL DEFAULT 4");
+
 const drawColumns=db.prepare("PRAGMA table_info(cup_draws)").all().map(x=>x.name);
 if(!drawColumns.includes("bye_team_id")) db.exec("ALTER TABLE cup_draws ADD COLUMN bye_team_id INTEGER");
 
@@ -366,6 +370,9 @@ app.post("/api/teams",requireLogin,upload.single("crest"),(req,res)=>{
  }
 });
 
+app.get("/api/teams/:id/dashboard",async(req,res)=>{ const team=db.prepare("SELECT id,name,abbreviation,ea_name,crest,description,status,owner_id FROM teams WHERE id=? AND status='approved'").get(req.params.id); if(!team)return res.status(404).json({error:"Team nicht gefunden"}); const roster=db.prepare(`SELECT r.*,u.ea_name FROM rosters r JOIN users u ON u.id=r.user_id WHERE r.team_id=? ORDER BY r.shirt_number`).all(team.id); const totals=db.prepare(`SELECT COALESCE(SUM(ps.goals),0) goals,COALESCE(SUM(ps.assists),0) assists,COALESCE(SUM(ps.clean_sheet),0) clean_sheets,COUNT(DISTINCT ps.match_id) matches FROM player_match_stats ps JOIN rosters r ON r.user_id=ps.player_id WHERE r.team_id=?`).get(team.id); const playerStats=db.prepare(`SELECT u.id,u.ea_name,r.shirt_number,r.main_position,r.secondary_position_1,r.secondary_position_2,COALESCE(SUM(ps.goals),0) goals,COALESCE(SUM(ps.assists),0) assists,COALESCE(SUM(ps.clean_sheet),0) clean_sheets FROM rosters r JOIN users u ON u.id=r.user_id LEFT JOIN player_match_stats ps ON ps.player_id=u.id WHERE r.team_id=? GROUP BY u.id,r.shirt_number,r.main_position,r.secondary_position_1,r.secondary_position_2 ORDER BY r.shirt_number`).all(team.id); res.json({team,roster,totals,playerStats}); });
+app.put("/api/teams/:id",requireLogin,upload.single("crest"),(req,res)=>{ if(!teamManager(req,req.params.id))return res.status(403).json({error:"Nur Manager oder Co. Manager dürfen das Team bearbeiten"}); const t=db.prepare("SELECT * FROM teams WHERE id=? AND status='approved'").get(req.params.id); if(!t)return res.status(404).json({error:"Team nicht gefunden"}); const name=String(req.body.name||t.name).trim(),ab=String(req.body.abbreviation||t.abbreviation).trim().toUpperCase(),ea=String(req.body.eaName||t.ea_name).trim(); if(!name||!/^[A-Z]{3}$/.test(ab)||!ea)return res.status(400).json({error:"Teamname, 3-Buchstaben-Abkürzung und EA-Teamname sind erforderlich"}); const dupe=db.prepare("SELECT id FROM teams WHERE abbreviation=? AND id<>?").get(ab,t.id); if(dupe)return res.status(409).json({error:"Diese Abkürzung ist bereits vergeben"}); const crest=req.file?"/uploads/"+req.file.filename:t.crest; db.prepare("UPDATE teams SET name=?,abbreviation=?,ea_name=?,description=?,crest=? WHERE id=?").run(name,ab,ea,String(req.body.description||""),crest,t.id); res.json({ok:true}); });
+app.delete("/api/teams/:id/roster/:userId",requireLogin,(req,res)=>{if(!teamManager(req,req.params.id))return res.status(403).json({error:"Keine Berechtigung"}); db.prepare("DELETE FROM rosters WHERE team_id=? AND user_id=?").run(req.params.id,req.params.userId); res.json({ok:true});});
 app.get("/api/teams/:id/managers",(req,res)=>{ const team=db.prepare("SELECT id,owner_id FROM teams WHERE id=?").get(req.params.id); if(!team)return res.status(404).json({error:"Team nicht gefunden"}); const owner=db.prepare("SELECT id,ea_name FROM users WHERE id=?").get(team.owner_id); const coManagers=db.prepare("SELECT tm.user_id,tm.role,u.ea_name FROM team_managers tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=?").all(req.params.id); res.json({owner,coManagers}); });
 app.post("/api/teams/:id/co-manager",requireLogin,(req,res)=>{ const team=db.prepare("SELECT id,owner_id,status FROM teams WHERE id=?").get(req.params.id); if(!team||team.owner_id!==req.user.id||team.status!=="approved")return res.status(403).json({error:"Nur der Vereinsmanager kann einen Co. Manager hinzufügen"}); const player=db.prepare("SELECT id FROM users WHERE ea_name=? AND active=1").get(String(req.body.eaName||"").trim()); if(!player)return res.status(404).json({error:"GEC-Account nicht gefunden"}); if(player.id===team.owner_id)return res.status(400).json({error:"Der Vereinsmanager ist bereits Manager"}); db.prepare("INSERT OR REPLACE INTO team_managers(team_id,user_id,role) VALUES(?,?, 'co_manager')").run(team.id,player.id); res.json({ok:true}); });
 app.delete("/api/teams/:id/co-manager/:userId",requireLogin,(req,res)=>{ const team=db.prepare("SELECT id,owner_id FROM teams WHERE id=?").get(req.params.id); if(!team||team.owner_id!==req.user.id)return res.status(403).json({error:"Nur der Vereinsmanager darf Co. Manager entfernen"}); db.prepare("DELETE FROM team_managers WHERE team_id=? AND user_id=?").run(team.id,req.params.userId); res.json({ok:true}); });
@@ -405,20 +412,39 @@ app.delete("/api/cups/:id/register",requireLogin,(req,res)=>{
  db.prepare("DELETE FROM competition_teams WHERE competition_id=? AND team_id=?").run(id,team.team_id); res.json({ok:true});
 });
 app.post("/api/admin/cups/:id/draw",staff,(req,res)=>{
- const id=Number(req.params.id); const cup=db.prepare("SELECT id FROM competitions WHERE id=? AND type='cup'").get(id); if(!cup)return res.status(404).json({error:"Cup nicht gefunden"});
+ const id=Number(req.params.id); const cup=db.prepare("SELECT * FROM competitions WHERE id=? AND type='cup'").get(id); if(!cup)return res.status(404).json({error:"Cup nicht gefunden"});
  let teams=db.prepare("SELECT team_id FROM competition_teams WHERE competition_id=? ORDER BY team_id").all(id).map(x=>x.team_id); if(teams.length<2)return res.status(400).json({error:"Mindestens 2 Teams werden benötigt."});
  if(db.prepare("SELECT 1 FROM matches WHERE competition_id=? LIMIT 1").get(id))return res.status(409).json({error:"Dieser Cup wurde bereits ausgelost."});
  for(let i=teams.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[teams[i],teams[j]]=[teams[j],teams[i]];}
- const byeTeam=teams.length%2?teams.pop():null; const round=teams.length+ (byeTeam?1:0)<=2?'Finale':teams.length+ (byeTeam?1:0)<=4?'Halbfinale':teams.length+ (byeTeam?1:0)<=8?'Viertelfinale':'Runde 1';
- const tx=db.transaction(()=>{db.prepare("INSERT INTO cup_draws(competition_id,round_name,bye_team_id) VALUES(?,?,?)").run(id,round,byeTeam||null); for(let i=0;i+1<teams.length;i+=2)db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,status,round_name,bracket_order) VALUES(?,?,?,?,?,?)").run(id,teams[i],teams[i+1],'pending',round,i/2+1);}); tx(); res.json({ok:true,round,bye:byeTeam});
+ const tx=db.transaction(()=>{
+   if(cup.format==='groups_ko'){
+     const size=Math.max(3,Math.min(4,Number(cup.group_size||4))); const groups=Math.ceil(teams.length/size); const buckets=Array.from({length:groups},()=>[]);
+     teams.forEach((t,i)=>buckets[i%groups].push(t));
+     buckets.forEach((bucket,gi)=>{ const name=String.fromCharCode(65+gi); db.prepare("INSERT INTO cup_draws(competition_id,round_name,bye_team_id) VALUES(?,?,NULL)").run(id,`Gruppe ${name}`); for(let i=0;i<bucket.length;i++)for(let j=i+1;j<bucket.length;j++)db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,status,round_name,bracket_order) VALUES(?,?,?,?,?,?)").run(id,bucket[i],bucket[j],'pending',`Gruppe ${name}`,i*10+j); });
+   } else {
+     const byeTeam=teams.length%2?teams.pop():null; const count=teams.length+(byeTeam?1:0); const round=count<=2?'Finale':count<=4?'Halbfinale':count<=8?'Viertelfinale':'Runde 1';
+     db.prepare("INSERT INTO cup_draws(competition_id,round_name,bye_team_id) VALUES(?,?,?)").run(id,round,byeTeam||null); for(let i=0;i+1<teams.length;i+=2)db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,status,round_name,bracket_order) VALUES(?,?,?,?,?,?)").run(id,teams[i],teams[i+1],'pending',round,i/2+1);
+   }
+ }); tx(); res.json({ok:true,format:cup.format});
 });
 app.post("/api/admin/cups/:id/next-round",staff,(req,res)=>{
- const id=Number(req.params.id); const ms=db.prepare("SELECT * FROM matches WHERE competition_id=? AND round_name<>'' ORDER BY id").all(id); if(!ms.length)return res.status(400).json({error:"Keine Cup-Spiele vorhanden."}); const rounds=[...new Set(ms.map(x=>x.round_name))]; const current=rounds[rounds.length-1]; const cur=ms.filter(x=>x.round_name===current);
- if(cur.some(x=>x.status!=="finished"||x.home_score==null||x.away_score==null))return res.status(400).json({error:"Alle Spiele der aktuellen Runde müssen beendet und mit Ergebnis versehen sein."});
+ const id=Number(req.params.id); const cup=db.prepare("SELECT * FROM competitions WHERE id=? AND type='cup'").get(id); if(!cup)return res.status(404).json({error:"Cup nicht gefunden"});
+ const ms=db.prepare("SELECT * FROM matches WHERE competition_id=? AND round_name<>'' ORDER BY id").all(id); if(!ms.length)return res.status(400).json({error:"Keine Cup-Spiele vorhanden."});
+ if(cup.format==='groups_ko'){
+   const groupMatches=ms.filter(x=>x.round_name.startsWith('Gruppe ')); if(groupMatches.some(x=>x.status!=="finished"||x.home_score==null||x.away_score==null))return res.status(400).json({error:"Alle Gruppenspiele müssen beendet und mit Ergebnis versehen sein."});
+   const groupNames=[...new Set(groupMatches.map(x=>x.round_name))]; const qualifiers=[];
+   for(const gn of groupNames){ const table=new Map(); for(const m of groupMatches.filter(x=>x.round_name===gn)){ for(const tid of [m.home_team_id,m.away_team_id])if(!table.has(tid))table.set(tid,{team_id:tid,pts:0,gd:0,gf:0}); const h=table.get(m.home_team_id),a=table.get(m.away_team_id); h.gf+=m.home_score;a.gf+=m.away_score;h.gd+=m.home_score-m.away_score;a.gd+=m.away_score-m.home_score; if(m.home_score>m.away_score)h.pts+=3; else if(m.away_score>m.home_score)a.pts+=3; else {h.pts++;a.pts++;} } const ranked=[...table.values()].sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf||a.team_id-b.team_id); qualifiers.push(...ranked.slice(0,2).map(x=>x.team_id)); }
+   if(db.prepare("SELECT 1 FROM matches WHERE competition_id=? AND round_name NOT LIKE 'Gruppe %' LIMIT 1").get(id))return res.status(409).json({error:"Die K.-o.-Phase wurde bereits erstellt."});
+   for(let i=qualifiers.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[qualifiers[i],qualifiers[j]]=[qualifiers[j],qualifiers[i]];}
+   const count=qualifiers.length; const bye=count%2?qualifiers.pop():null; const total=qualifiers.length+(bye?1:0); const round=total<=2?'Finale':total<=4?'Halbfinale':total<=8?'Viertelfinale':total<=16?'Achtelfinale':'K.-o. Runde';
+   const tx=db.transaction(()=>{db.prepare("INSERT INTO cup_draws(competition_id,round_name,bye_team_id) VALUES(?,?,?)").run(id,round,bye||null); for(let i=0;i+1<qualifiers.length;i+=2)db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,status,round_name,bracket_order) VALUES(?,?,?,?,?,?)").run(id,qualifiers[i],qualifiers[i+1],'pending',round,i/2+1);}); tx(); return res.json({ok:true,round,bye});
+ }
+ const rounds=[...new Set(ms.map(x=>x.round_name))]; const current=rounds[rounds.length-1]; const cur=ms.filter(x=>x.round_name===current); if(cur.some(x=>x.status!=="finished"||x.home_score==null||x.away_score==null))return res.status(400).json({error:"Alle Spiele der aktuellen Runde müssen beendet und mit Ergebnis versehen sein."});
  const winners=[]; for(const m of cur){if(m.home_score===m.away_score)return res.status(400).json({error:"Gleichstand ist für die nächste Runde nicht erlaubt. Ergebnis bitte korrigieren."}); winners.push(m.home_score>m.away_score?m.home_team_id:m.away_team_id);} const draw=db.prepare("SELECT bye_team_id FROM cup_draws WHERE competition_id=? AND round_name=? ORDER BY id DESC LIMIT 1").get(id,current); if(draw?.bye_team_id)winners.push(draw.bye_team_id); if(winners.length<2)return res.json({ok:true,finished:true});
  const byeTeam=winners.length%2?winners.pop():null; const round=winners.length+(byeTeam?1:0)===2?'Finale':winners.length+(byeTeam?1:0)===4?'Halbfinale':winners.length+(byeTeam?1:0)===8?'Viertelfinale':'Nächste Runde'; const tx=db.transaction(()=>{db.prepare("INSERT INTO cup_draws(competition_id,round_name,bye_team_id) VALUES(?,?,?)").run(id,round,byeTeam||null); for(let i=0;i+1<winners.length;i+=2)db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,status,round_name,bracket_order) VALUES(?,?,?,?,?,?)").run(id,winners[i],winners[i+1],'pending',round,i/2+1);}); tx(); res.json({ok:true,round,bye:byeTeam});
 });
 
+app.get("/api/cups/:id/bracket",(req,res)=>{const id=Number(req.params.id); const cup=db.prepare("SELECT id,name,format,group_size FROM competitions WHERE id=? AND type='cup'").get(id); if(!cup)return res.status(404).json({error:"Cup nicht gefunden"}); const matches=db.prepare(`SELECT m.*,h.name home_name,h.crest home_crest,a.name away_name,a.crest away_crest FROM matches m LEFT JOIN teams h ON h.id=m.home_team_id LEFT JOIN teams a ON a.id=m.away_team_id WHERE m.competition_id=? ORDER BY m.round_name,m.bracket_order,m.id`).all(id); res.json({cup,matches});});
 app.get("/api/free-agents",(req,res)=>{ res.json(db.prepare(`SELECT fa.*,u.ea_name FROM free_agents fa JOIN users u ON u.id=fa.user_id WHERE fa.active=1 AND u.active=1 ORDER BY fa.updated_at DESC`).all().map(x=>({...x,market:marketFor(x.user_id)}))); });
 app.get("/api/free-agents/me",requireLogin,(req,res)=>res.json(db.prepare("SELECT * FROM free_agents WHERE user_id=?").get(req.user.id)||null));
 app.post("/api/free-agents",requireLogin,(req,res)=>{ const age=req.body.age===""?null:Number(req.body.age); const positions=[req.body.mainPosition,req.body.secondaryPosition1,req.body.secondaryPosition2,req.body.secondaryPosition3].map(x=>String(x||"").toUpperCase()).filter(Boolean); if(!positions.length)return res.status(400).json({error:"Hauptposition ist erforderlich"}); if(positions.length!==new Set(positions).size)return res.status(400).json({error:"Positionen dürfen nicht doppelt sein"}); if(age!==null&&(!Number.isInteger(age)||age<13||age>100))return res.status(400).json({error:"Alter muss zwischen 13 und 100 liegen"}); db.prepare(`INSERT INTO free_agents(user_id,age,main_position,secondary_position_1,secondary_position_2,secondary_position_3,bio,active,updated_at) VALUES(?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET age=excluded.age,main_position=excluded.main_position,secondary_position_1=excluded.secondary_position_1,secondary_position_2=excluded.secondary_position_2,secondary_position_3=excluded.secondary_position_3,bio=excluded.bio,active=1,updated_at=CURRENT_TIMESTAMP`).run(req.user.id,age,positions[0],positions[1]||"",positions[2]||"",positions[3]||"",String(req.body.bio||"").trim()); res.json({ok:true}); });
@@ -602,8 +628,9 @@ app.get("/api/admin/transfer-windows",staff,(req,res)=>res.json(db.prepare("SELE
 app.delete("/api/admin/transfer-windows/:id",staff,(req,res)=>{db.prepare("UPDATE transfer_windows SET active=0 WHERE id=?").run(req.params.id);res.json({ok:true})});
 
 app.post("/api/admin/competitions",staff,(req,res)=>{
- const {type,name,description,startDate}=req.body;if(!["cup","league"].includes(type)||!name)return res.status(400).json({error:"Typ und Name erforderlich"});
- const info=db.prepare("INSERT INTO competitions(type,name,description,start_date) VALUES(?,?,?,?)").run(type,name,description||"",startDate||null);res.json({ok:true,id:info.lastInsertRowid});
+ const {type,name,description,startDate}=req.body; if(!["cup","league"].includes(type)||!name)return res.status(400).json({error:"Typ und Name erforderlich"});
+ const format=type==="cup"&&req.body.format==="groups_ko"?"groups_ko":"knockout"; const groupSize=Math.max(3,Math.min(4,Number(req.body.groupSize||4)));
+ const info=db.prepare("INSERT INTO competitions(type,name,description,start_date,format,group_size) VALUES(?,?,?,?,?,?)").run(type,name,description||"",startDate||null,format,groupSize);res.json({ok:true,id:info.lastInsertRowid});
 });
 app.put("/api/admin/competitions/:id",staff,(req,res)=>{
  const id=Number(req.params.id);
@@ -612,7 +639,8 @@ app.put("/api/admin/competitions/:id",staff,(req,res)=>{
  const type=String(req.body.type||existing.type);
  const name=String(req.body.name||"").trim();
  if(!["cup","league"].includes(type)||!name)return res.status(400).json({error:"Typ und Name erforderlich"});
- db.prepare("UPDATE competitions SET type=?,name=?,description=?,start_date=?,status=? WHERE id=?").run(type,name,String(req.body.description||""),req.body.startDate||null,String(req.body.status||existing.status),id);
+ const format=type==="cup"&&req.body.format==="groups_ko"?"groups_ko":"knockout"; const groupSize=Math.max(3,Math.min(4,Number(req.body.groupSize||existing.group_size||4)));
+ db.prepare("UPDATE competitions SET type=?,name=?,description=?,start_date=?,status=?,format=?,group_size=? WHERE id=?").run(type,name,String(req.body.description||""),req.body.startDate||null,String(req.body.status||existing.status),format,groupSize,id);
  res.json({ok:true});
 });
 app.delete("/api/admin/competitions/:id",staff,(req,res)=>{

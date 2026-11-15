@@ -1,21 +1,21 @@
-# GEC Platform v20 – Persistent data and safe updates
+# GEC Platform v25
 
-## Daten bleiben bei Updates erhalten
-- Der Server führt **keine DROP/DELETE/RESET-Operationen beim Start** aus.
-- Tabellen werden mit `CREATE TABLE IF NOT EXISTS` angelegt. Bestehende Daten bleiben erhalten.
-- Neue Felder werden ausschließlich per additive Migration (`ALTER TABLE ... ADD COLUMN`) ergänzt.
-- Die Datenbank wird vor dem Start der Anwendung in `backups/` gesichert (bis zu 10 Backups).
-- Sessions bleiben in derselben Datenbank erhalten.
+## Neu in v25
+- Cup-Anzeige mit festem Team-/Wappen-Layout, kein Überlaufen der Wappen.
+- Separater Button „Turnierbaum öffnen“ mit horizontalem K.-o.-Baum.
+- Cup-Erstellung: direktes K.-o. oder Gruppenphase + K.-o.; Gruppengröße 3 oder 4.
+- Zufällige Auslosung per serverseitigem Shuffle; Gruppen werden ebenfalls zufällig verteilt.
+- Gruppenphase mit Rundenspielen und öffentlicher Tabelle; danach Staff-Button für K.-o.-Auslosung.
+- Vereinsmanager kann Teamdaten bearbeiten und den Kader registrieren/verwalten.
+- Kaderaufnahme ist nur für bereits registrierte GEC-Spieler möglich; ein Spieler kann nur einem Team angehören.
+- Öffentliche Teamseite mit Kader, Toren, Vorlagen, Zu-Null und automatisch berechnetem Marktwert.
+- Staff kann Match-Stats pro Spieler eintragen: Tore, Vorlagen und „Zu Null“ nur für TW.
+- Free-Agent-Bereich für Manager/Co-Manager erweitert: Bewerbungen sichtbar und annehmbar/ablehnbar; Angebote bleiben im bestehenden Transferfluss.
+- Persistente Datenbank /data bleibt erhalten; keine Startup-Resets oder Drops.
 
-## Railway – einmalig wichtig
-Für echte Persistenz über Deployments muss ein Railway Volume verwendet werden. Empfohlen:
-- Volume Mount Path: `/data`
-- Variable `GEC_DATA_DIR=/data`
-- Variable `GEC_DB=/data/gec.sqlite`
-- Variable `GEC_UPLOAD_DIR=/data/uploads`
-- Variable `SESSION_SECRET` dauerhaft setzen und bei Updates **nicht ändern**.
-
-Wenn diese Variablen gesetzt sind, liegen Datenbank, Spieler/Teams/Stats und hochgeladene Wappen außerhalb des wechselnden App-Deployments. Beim Update wird nur der Code ersetzt; die Daten bleiben im Volume.
-
-## Wichtig
-Das Railway Volume nicht löschen. Auch `gec.sqlite` nicht manuell löschen.
+## Railway
+- GEC_DATA_DIR=/data
+- GEC_DB=/data/gec.sqlite
+- GEC_UPLOAD_DIR=/data/uploads
+- Stable SESSION_SECRET setzen.
+- Bestehendes Railway Volume nicht löschen.

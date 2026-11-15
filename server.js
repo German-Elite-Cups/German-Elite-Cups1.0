@@ -172,6 +172,11 @@ CREATE TABLE IF NOT EXISTS team_managers(
 );
 CREATE TABLE IF NOT EXISTS player_market_values(
  user_id INTEGER PRIMARY KEY, manual_value INTEGER, note TEXT DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);,
+CREATE TABLE IF NOT EXISTS platform_settings(
+ key TEXT PRIMARY KEY,
+ value TEXT NOT NULL DEFAULT '',
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `);
 
@@ -294,6 +299,22 @@ app.post("/api/setup",async(req,res)=>{
  const info=db.prepare("INSERT INTO users(ea_name,password_hash,role) VALUES(?,?, 'owner')").run(eaName.trim(),hash);
  req.session.userId=info.lastInsertRowid;
  res.json({ok:true,user:currentUser(req)});
+});
+app.get("/api/settings/public",(req,res)=>{
+ const row=db.prepare("SELECT value FROM platform_settings WHERE key=?").get("discord_url");
+ res.json({discordUrl: row?.value || ""});
+});
+app.get("/api/admin/settings",staff,(req,res)=>{
+ const rows=db.prepare("SELECT key,value,updated_at FROM platform_settings ORDER BY key").all();
+ const out={}; for(const r of rows) out[r.key]=r.value; res.json(out);
+});
+app.put("/api/admin/settings",staff,(req,res)=>{
+ const discordUrl=String(req.body.discordUrl||"").trim();
+ if(discordUrl){
+   try{ const u=new URL(discordUrl); if(!["https:","http:"].includes(u.protocol)) throw new Error(); }catch{ return res.status(400).json({error:"Ungültiger Discord-Link. Bitte einen vollständigen http(s)-Link eingeben."}); }
+ }
+ db.prepare("INSERT INTO platform_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP").run("discord_url",discordUrl);
+ res.json({ok:true,discordUrl});
 });
 app.post("/api/register",async(req,res)=>{
  const eaName=String(req.body.eaName||"").trim(); const password=String(req.body.password||"");

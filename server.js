@@ -360,20 +360,26 @@ app.get("/api/cups/:id",(req,res)=>{
  const id=Number(req.params.id); const cup=db.prepare("SELECT * FROM competitions WHERE id=? AND type='cup'").get(id); if(!cup)return res.status(404).json({error:"Cup nicht gefunden"});
  const teams=db.prepare(`SELECT ct.team_id,ct.status,t.name,t.abbreviation,t.crest FROM competition_teams ct JOIN teams t ON t.id=ct.team_id WHERE ct.competition_id=? ORDER BY t.name`).all(id);
  const matches=db.prepare(`SELECT m.*,h.name home_name,h.crest home_crest,a.name away_name,a.crest away_crest FROM matches m LEFT JOIN teams h ON h.id=m.home_team_id LEFT JOIN teams a ON a.id=m.away_team_id WHERE m.competition_id=? ORDER BY m.id`).all(id);
- const u=currentUser(req); const myTeam=u?db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(u.id):null;
+ const u=currentUser(req);
+ let myTeam=null;
+ if(u){
+  myTeam=db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(u.id);
+  if(!myTeam) myTeam=db.prepare("SELECT id team_id FROM teams WHERE owner_id=? AND status='approved'").get(u.id);
+  if(!myTeam) myTeam=db.prepare("SELECT tm.team_id FROM team_managers tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.status='approved'").get(u.id);
+ }
  res.json({cup,teams,matches,myTeamId:myTeam?.team_id||null,registered:!!(myTeam&&teams.some(t=>t.team_id===myTeam.team_id))});
 });
 app.post("/api/cups/:id/register",requireLogin,(req,res)=>{
  const id=Number(req.params.id); if(!db.prepare("SELECT id FROM competitions WHERE id=? AND type='cup'").get(id))return res.status(404).json({error:"Cup nicht gefunden"});
- let team=db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(req.user.id);
- if(!team){ team=db.prepare("SELECT id team_id FROM teams WHERE owner_id=? AND status='approved'").get(req.user.id); }
- if(!team){ team=db.prepare("SELECT tm.team_id FROM team_managers tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.status='approved'").get(req.user.id); }
+ let team=db.prepare("SELECT id team_id FROM teams WHERE owner_id=? AND status='approved' ORDER BY id LIMIT 1").get(req.user.id);
+ if(!team){ team=db.prepare("SELECT tm.team_id FROM team_managers tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.status='approved' ORDER BY tm.created_at DESC LIMIT 1").get(req.user.id); }
+ if(!team){ team=db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(req.user.id); }
  if(!team)return res.status(400).json({error:"Du musst Manager/Co-Manager eines genehmigten Teams sein oder selbst in einem genehmigten Team spielen."});
  if(db.prepare("SELECT 1 FROM competition_teams WHERE competition_id=? AND team_id=?").get(id,team.team_id))return res.status(409).json({error:"Dein Team ist bereits angemeldet."});
  db.prepare("INSERT INTO competition_teams(competition_id,team_id) VALUES(?,?)").run(id,team.team_id); res.json({ok:true});
 });
 app.delete("/api/cups/:id/register",requireLogin,(req,res)=>{
- const id=Number(req.params.id); let team=db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(req.user.id); if(!team)team=db.prepare("SELECT id team_id FROM teams WHERE owner_id=? AND status='approved'").get(req.user.id); if(!team)team=db.prepare("SELECT tm.team_id FROM team_managers tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.status='approved'").get(req.user.id); if(!team)return res.status(400).json({error:"Kein genehmigtes Team gefunden."});
+ const id=Number(req.params.id); let team=db.prepare("SELECT id team_id FROM teams WHERE owner_id=? AND status='approved' ORDER BY id LIMIT 1").get(req.user.id); if(!team)team=db.prepare("SELECT tm.team_id FROM team_managers tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.status='approved' ORDER BY tm.created_at DESC LIMIT 1").get(req.user.id); if(!team)team=db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(req.user.id); if(!team)return res.status(400).json({error:"Kein genehmigtes Team gefunden."});
  if(db.prepare("SELECT 1 FROM matches WHERE competition_id=? AND (home_team_id=? OR away_team_id=?) LIMIT 1").get(id,team.team_id,team.team_id))return res.status(409).json({error:"Nach der Auslosung kann dein Team nicht mehr abgemeldet werden."});
  db.prepare("DELETE FROM competition_teams WHERE competition_id=? AND team_id=?").run(id,team.team_id); res.json({ok:true});
 });
@@ -445,6 +451,31 @@ app.post("/api/admin/teams/:id/status",staff,(req,res)=>{
  const status=["approved","rejected","suspended"].includes(req.body.status)?req.body.status:null;
  if(!status)return res.status(400).json({error:"Ungültiger Status"});
  db.prepare("UPDATE teams SET status=? WHERE id=?").run(status,req.params.id);res.json({ok:true});
+});
+app.get("/api/admin/teams",staff,(req,res)=>{
+ const rows=db.prepare(`SELECT t.*,u.ea_name owner_name,
+ (SELECT COUNT(*) FROM rosters r WHERE r.team_id=t.id) roster_count,
+ (SELECT COUNT(*) FROM competition_teams ct WHERE ct.team_id=t.id) cup_count
+ FROM teams t JOIN users u ON u.id=t.owner_id ORDER BY t.created_at DESC`).all();
+ res.json(rows);
+});
+app.put("/api/admin/teams/:id",staff,upload.single("crest"),(req,res)=>{
+ const id=Number(req.params.id);
+ const team=db.prepare("SELECT * FROM teams WHERE id=?").get(id);
+ if(!team)return res.status(404).json({error:"Team nicht gefunden"});
+ const name=String(req.body.name||"").trim(); const abbreviation=String(req.body.abbreviation||"").trim().toUpperCase(); const eaName=String(req.body.eaName||"").trim(); const description=String(req.body.description||""); const status=String(req.body.status||team.status); const ownerId=Number(req.body.ownerId||team.owner_id);
+ if(!name||!/^[A-Z]{3}$/.test(abbreviation)||!eaName)return res.status(400).json({error:"Name, EA-Teamname und genau 3 Buchstaben sind erforderlich"});
+ if(!["pending","approved","rejected","suspended"].includes(status))return res.status(400).json({error:"Ungültiger Teamstatus"});
+ const owner=db.prepare("SELECT id FROM users WHERE id=? AND active=1").get(ownerId); if(!owner)return res.status(400).json({error:"Neuer Manager-Account nicht gefunden"});
+ try{
+  let crest=team.crest; if(req.file) crest="/uploads/"+req.file.filename;
+  db.prepare("UPDATE teams SET name=?,abbreviation=?,ea_name=?,crest=?,description=?,status=?,owner_id=? WHERE id=?").run(name,abbreviation,eaName,crest,description,status,ownerId,id);
+  res.json({ok:true});
+ }catch(e){res.status(400).json({error:e.message.includes("UNIQUE")?"Diese Abkürzung ist bereits vergeben":"Team konnte nicht gespeichert werden"});}
+});
+app.delete("/api/admin/teams/:id",requireRole("owner","management","admin"),(req,res)=>{
+ const id=Number(req.params.id); const team=db.prepare("SELECT id,name FROM teams WHERE id=?").get(id); if(!team)return res.status(404).json({error:"Team nicht gefunden"});
+ db.prepare("DELETE FROM teams WHERE id=?").run(id); res.json({ok:true});
 });
 app.get("/api/admin/users",staff,(req,res)=>res.json(db.prepare("SELECT id,ea_name,role,active,created_at FROM users ORDER BY created_at DESC").all()));
 app.post("/api/admin/users/create",requireRole("owner"),async(req,res)=>{

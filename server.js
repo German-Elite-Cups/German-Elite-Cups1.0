@@ -78,6 +78,23 @@ CREATE TABLE IF NOT EXISTS competitions(
  status TEXT NOT NULL DEFAULT 'upcoming',
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS competition_teams(
+ competition_id INTEGER NOT NULL,
+ team_id INTEGER NOT NULL,
+ status TEXT NOT NULL DEFAULT 'registered',
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(competition_id,team_id),
+ FOREIGN KEY(competition_id) REFERENCES competitions(id) ON DELETE CASCADE,
+ FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS cup_draws(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ competition_id INTEGER NOT NULL,
+ round_name TEXT NOT NULL,
+ drawn_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ bye_team_id INTEGER,
+ FOREIGN KEY(competition_id) REFERENCES competitions(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS matches(
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  competition_id INTEGER,
@@ -168,6 +185,13 @@ if(!profileColumns.includes("secondary_position_1")) db.exec("ALTER TABLE player
 if(!profileColumns.includes("secondary_position_2")) db.exec("ALTER TABLE player_profiles ADD COLUMN secondary_position_2 TEXT DEFAULT ''");
 if(!profileColumns.includes("secondary_position_3")) db.exec("ALTER TABLE player_profiles ADD COLUMN secondary_position_3 TEXT DEFAULT ''");
 
+const drawColumns=db.prepare("PRAGMA table_info(cup_draws)").all().map(x=>x.name);
+if(!drawColumns.includes("bye_team_id")) db.exec("ALTER TABLE cup_draws ADD COLUMN bye_team_id INTEGER");
+
+const matchColumns=db.prepare("PRAGMA table_info(matches)").all().map(x=>x.name);
+if(!matchColumns.includes("round_name")) db.exec("ALTER TABLE matches ADD COLUMN round_name TEXT DEFAULT ''");
+if(!matchColumns.includes("bracket_order")) db.exec("ALTER TABLE matches ADD COLUMN bracket_order INTEGER DEFAULT 0");
+
 const rosterColumns=db.prepare("PRAGMA table_info(rosters)").all().map(x=>x.name);
 if(!rosterColumns.includes("main_position")) db.exec("ALTER TABLE rosters ADD COLUMN main_position TEXT NOT NULL DEFAULT ''");
 if(!rosterColumns.includes("secondary_position_1")) db.exec("ALTER TABLE rosters ADD COLUMN secondary_position_1 TEXT DEFAULT ''");
@@ -233,7 +257,7 @@ app.use(express.json());
    proxy:true,
    cookie:{httpOnly:true,sameSite:"lax",secure:"auto",maxAge:1000*60*60*24*30}
  }));
-app.use("/uploads",express.static(path.join(__dirname,"public/uploads")));
+app.use("/uploads",express.static(UPLOAD_DIR));
 app.use(express.static(path.join(__dirname,"public")));
 
 const upload=multer({
@@ -332,15 +356,51 @@ FROM matches m LEFT JOIN competitions c ON c.id=m.competition_id
 LEFT JOIN teams h ON h.id=m.home_team_id LEFT JOIN teams a ON a.id=m.away_team_id
 ORDER BY m.kickoff DESC`).all()));
 
+app.get("/api/cups/:id",(req,res)=>{
+ const id=Number(req.params.id); const cup=db.prepare("SELECT * FROM competitions WHERE id=? AND type='cup'").get(id); if(!cup)return res.status(404).json({error:"Cup nicht gefunden"});
+ const teams=db.prepare(`SELECT ct.team_id,ct.status,t.name,t.abbreviation,t.crest FROM competition_teams ct JOIN teams t ON t.id=ct.team_id WHERE ct.competition_id=? ORDER BY t.name`).all(id);
+ const matches=db.prepare(`SELECT m.*,h.name home_name,h.crest home_crest,a.name away_name,a.crest away_crest FROM matches m LEFT JOIN teams h ON h.id=m.home_team_id LEFT JOIN teams a ON a.id=m.away_team_id WHERE m.competition_id=? ORDER BY m.id`).all(id);
+ const u=currentUser(req); const myTeam=u?db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(u.id):null;
+ res.json({cup,teams,matches,myTeamId:myTeam?.team_id||null,registered:!!(myTeam&&teams.some(t=>t.team_id===myTeam.team_id))});
+});
+app.post("/api/cups/:id/register",requireLogin,(req,res)=>{
+ const id=Number(req.params.id); if(!db.prepare("SELECT id FROM competitions WHERE id=? AND type='cup'").get(id))return res.status(404).json({error:"Cup nicht gefunden"});
+ let team=db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(req.user.id);
+ if(!team){ team=db.prepare("SELECT id team_id FROM teams WHERE owner_id=? AND status='approved'").get(req.user.id); }
+ if(!team){ team=db.prepare("SELECT tm.team_id FROM team_managers tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.status='approved'").get(req.user.id); }
+ if(!team)return res.status(400).json({error:"Du musst Manager/Co-Manager eines genehmigten Teams sein oder selbst in einem genehmigten Team spielen."});
+ if(db.prepare("SELECT 1 FROM competition_teams WHERE competition_id=? AND team_id=?").get(id,team.team_id))return res.status(409).json({error:"Dein Team ist bereits angemeldet."});
+ db.prepare("INSERT INTO competition_teams(competition_id,team_id) VALUES(?,?)").run(id,team.team_id); res.json({ok:true});
+});
+app.delete("/api/cups/:id/register",requireLogin,(req,res)=>{
+ const id=Number(req.params.id); let team=db.prepare("SELECT r.team_id FROM rosters r JOIN teams t ON t.id=r.team_id WHERE r.user_id=? AND t.status='approved'").get(req.user.id); if(!team)team=db.prepare("SELECT id team_id FROM teams WHERE owner_id=? AND status='approved'").get(req.user.id); if(!team)team=db.prepare("SELECT tm.team_id FROM team_managers tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.status='approved'").get(req.user.id); if(!team)return res.status(400).json({error:"Kein genehmigtes Team gefunden."});
+ if(db.prepare("SELECT 1 FROM matches WHERE competition_id=? AND (home_team_id=? OR away_team_id=?) LIMIT 1").get(id,team.team_id,team.team_id))return res.status(409).json({error:"Nach der Auslosung kann dein Team nicht mehr abgemeldet werden."});
+ db.prepare("DELETE FROM competition_teams WHERE competition_id=? AND team_id=?").run(id,team.team_id); res.json({ok:true});
+});
+app.post("/api/admin/cups/:id/draw",staff,(req,res)=>{
+ const id=Number(req.params.id); const cup=db.prepare("SELECT id FROM competitions WHERE id=? AND type='cup'").get(id); if(!cup)return res.status(404).json({error:"Cup nicht gefunden"});
+ let teams=db.prepare("SELECT team_id FROM competition_teams WHERE competition_id=? ORDER BY team_id").all(id).map(x=>x.team_id); if(teams.length<2)return res.status(400).json({error:"Mindestens 2 Teams werden benötigt."});
+ if(db.prepare("SELECT 1 FROM matches WHERE competition_id=? LIMIT 1").get(id))return res.status(409).json({error:"Dieser Cup wurde bereits ausgelost."});
+ for(let i=teams.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[teams[i],teams[j]]=[teams[j],teams[i]];}
+ const byeTeam=teams.length%2?teams.pop():null; const round=teams.length+ (byeTeam?1:0)<=2?'Finale':teams.length+ (byeTeam?1:0)<=4?'Halbfinale':teams.length+ (byeTeam?1:0)<=8?'Viertelfinale':'Runde 1';
+ const tx=db.transaction(()=>{db.prepare("INSERT INTO cup_draws(competition_id,round_name,bye_team_id) VALUES(?,?,?)").run(id,round,byeTeam||null); for(let i=0;i+1<teams.length;i+=2)db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,status,round_name,bracket_order) VALUES(?,?,?,?,?,?)").run(id,teams[i],teams[i+1],'pending',round,i/2+1);}); tx(); res.json({ok:true,round,bye:byeTeam});
+});
+app.post("/api/admin/cups/:id/next-round",staff,(req,res)=>{
+ const id=Number(req.params.id); const ms=db.prepare("SELECT * FROM matches WHERE competition_id=? AND round_name<>'' ORDER BY id").all(id); if(!ms.length)return res.status(400).json({error:"Keine Cup-Spiele vorhanden."}); const rounds=[...new Set(ms.map(x=>x.round_name))]; const current=rounds[rounds.length-1]; const cur=ms.filter(x=>x.round_name===current);
+ if(cur.some(x=>x.status!=="finished"||x.home_score==null||x.away_score==null))return res.status(400).json({error:"Alle Spiele der aktuellen Runde müssen beendet und mit Ergebnis versehen sein."});
+ const winners=[]; for(const m of cur){if(m.home_score===m.away_score)return res.status(400).json({error:"Gleichstand ist für die nächste Runde nicht erlaubt. Ergebnis bitte korrigieren."}); winners.push(m.home_score>m.away_score?m.home_team_id:m.away_team_id);} const draw=db.prepare("SELECT bye_team_id FROM cup_draws WHERE competition_id=? AND round_name=? ORDER BY id DESC LIMIT 1").get(id,current); if(draw?.bye_team_id)winners.push(draw.bye_team_id); if(winners.length<2)return res.json({ok:true,finished:true});
+ const byeTeam=winners.length%2?winners.pop():null; const round=winners.length+(byeTeam?1:0)===2?'Finale':winners.length+(byeTeam?1:0)===4?'Halbfinale':winners.length+(byeTeam?1:0)===8?'Viertelfinale':'Nächste Runde'; const tx=db.transaction(()=>{db.prepare("INSERT INTO cup_draws(competition_id,round_name,bye_team_id) VALUES(?,?,?)").run(id,round,byeTeam||null); for(let i=0;i+1<winners.length;i+=2)db.prepare("INSERT INTO matches(competition_id,home_team_id,away_team_id,status,round_name,bracket_order) VALUES(?,?,?,?,?,?)").run(id,winners[i],winners[i+1],'pending',round,i/2+1);}); tx(); res.json({ok:true,round,bye:byeTeam});
+});
+
 app.get("/api/free-agents",(req,res)=>{ res.json(db.prepare(`SELECT fa.*,u.ea_name FROM free_agents fa JOIN users u ON u.id=fa.user_id WHERE fa.active=1 AND u.active=1 ORDER BY fa.updated_at DESC`).all().map(x=>({...x,market:marketFor(x.user_id)}))); });
 app.get("/api/free-agents/me",requireLogin,(req,res)=>res.json(db.prepare("SELECT * FROM free_agents WHERE user_id=?").get(req.user.id)||null));
 app.post("/api/free-agents",requireLogin,(req,res)=>{ const age=req.body.age===""?null:Number(req.body.age); const positions=[req.body.mainPosition,req.body.secondaryPosition1,req.body.secondaryPosition2,req.body.secondaryPosition3].map(x=>String(x||"").toUpperCase()).filter(Boolean); if(!positions.length)return res.status(400).json({error:"Hauptposition ist erforderlich"}); if(positions.length!==new Set(positions).size)return res.status(400).json({error:"Positionen dürfen nicht doppelt sein"}); if(age!==null&&(!Number.isInteger(age)||age<13||age>100))return res.status(400).json({error:"Alter muss zwischen 13 und 100 liegen"}); db.prepare(`INSERT INTO free_agents(user_id,age,main_position,secondary_position_1,secondary_position_2,secondary_position_3,bio,active,updated_at) VALUES(?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET age=excluded.age,main_position=excluded.main_position,secondary_position_1=excluded.secondary_position_1,secondary_position_2=excluded.secondary_position_2,secondary_position_3=excluded.secondary_position_3,bio=excluded.bio,active=1,updated_at=CURRENT_TIMESTAMP`).run(req.user.id,age,positions[0],positions[1]||"",positions[2]||"",positions[3]||"",String(req.body.bio||"").trim()); res.json({ok:true}); });
 app.delete("/api/free-agents/me",requireLogin,(req,res)=>{db.prepare("UPDATE free_agents SET active=0,updated_at=CURRENT_TIMESTAMP WHERE user_id=?").run(req.user.id);res.json({ok:true});});
-app.post("/api/free-agents/me/apply",requireLogin,(req,res)=>{ req.params.id=req.user.id; const target=db.prepare("SELECT * FROM free_agents WHERE user_id=? AND active=1").get(req.user.id); if(!target)return res.status(404).json({error:"Du bist aktuell nicht als Free Agent gelistet"}); const teamId=Number(req.body.teamId),message=String(req.body.message||"").trim(); if(!teamId||message.length<5)return res.status(400).json({error:"Team und ein Bewerbungstext sind erforderlich"}); const team=db.prepare("SELECT id FROM teams WHERE id=? AND status='approved'").get(teamId); if(!team)return res.status(404).json({error:"Team nicht gefunden"}); const open=db.prepare("SELECT id FROM free_agent_applications WHERE player_id=? AND team_id=? AND status='pending'").get(req.user.id,team.id); if(open)return res.status(409).json({error:"Offene Bewerbung existiert bereits"}); const info=db.prepare("INSERT INTO free_agent_applications(player_id,team_id,message,status) VALUES(?,?,?,'pending')").run(req.user.id,team.id,message); res.json({ok:true,id:info.lastInsertRowid}); });
-app.post("/api/free-agents/:id/apply",requireLogin,(req,res)=>{ const target=db.prepare("SELECT * FROM free_agents WHERE user_id=? AND active=1").get(req.params.id); if(!target)return res.status(404).json({error:"Free Agent nicht gefunden"}); if(req.user.id!==target.user_id)return res.status(403).json({error:"Nur der Free Agent selbst kann Bewerbungen senden"}); const teamId=Number(req.body.teamId),message=String(req.body.message||"").trim(); if(!teamId||message.length<5)return res.status(400).json({error:"Team und ein Bewerbungstext sind erforderlich"}); const team=db.prepare("SELECT id FROM teams WHERE id=? AND status='approved'").get(teamId); if(!team)return res.status(404).json({error:"Team nicht gefunden"}); const open=db.prepare("SELECT id FROM free_agent_applications WHERE player_id=? AND team_id=? AND status='pending'").get(target.user_id,team.id); if(open)return res.status(409).json({error:"Offene Bewerbung existiert bereits"}); const info=db.prepare("INSERT INTO free_agent_applications(player_id,team_id,message,status) VALUES(?,?,?,'pending')").run(target.user_id,team.id,message); res.json({ok:true,id:info.lastInsertRowid}); });
+app.post("/api/free-agents/me/apply",requireLogin,(req,res)=>{ const blocked=transferBlocked(); if(blocked)return res.status(423).json({error:"Transferperiode gesperrt",window:blocked}); req.params.id=req.user.id; const target=db.prepare("SELECT * FROM free_agents WHERE user_id=? AND active=1").get(req.user.id); if(!target)return res.status(404).json({error:"Du bist aktuell nicht als Free Agent gelistet"}); const teamId=Number(req.body.teamId),message=String(req.body.message||"").trim(); if(!teamId||message.length<5)return res.status(400).json({error:"Team und ein Bewerbungstext sind erforderlich"}); const team=db.prepare("SELECT id FROM teams WHERE id=? AND status='approved'").get(teamId); if(!team)return res.status(404).json({error:"Team nicht gefunden"}); const open=db.prepare("SELECT id FROM free_agent_applications WHERE player_id=? AND team_id=? AND status='pending'").get(req.user.id,team.id); if(open)return res.status(409).json({error:"Offene Bewerbung existiert bereits"}); const info=db.prepare("INSERT INTO free_agent_applications(player_id,team_id,message,status) VALUES(?,?,?,'pending')").run(req.user.id,team.id,message); res.json({ok:true,id:info.lastInsertRowid}); });
+app.post("/api/free-agents/:id/apply",requireLogin,(req,res)=>{ const blocked=transferBlocked(); if(blocked)return res.status(423).json({error:"Transferperiode gesperrt",window:blocked}); const target=db.prepare("SELECT * FROM free_agents WHERE user_id=? AND active=1").get(req.params.id); if(!target)return res.status(404).json({error:"Free Agent nicht gefunden"}); if(req.user.id!==target.user_id)return res.status(403).json({error:"Nur der Free Agent selbst kann Bewerbungen senden"}); const teamId=Number(req.body.teamId),message=String(req.body.message||"").trim(); if(!teamId||message.length<5)return res.status(400).json({error:"Team und ein Bewerbungstext sind erforderlich"}); const team=db.prepare("SELECT id FROM teams WHERE id=? AND status='approved'").get(teamId); if(!team)return res.status(404).json({error:"Team nicht gefunden"}); const open=db.prepare("SELECT id FROM free_agent_applications WHERE player_id=? AND team_id=? AND status='pending'").get(target.user_id,team.id); if(open)return res.status(409).json({error:"Offene Bewerbung existiert bereits"}); const info=db.prepare("INSERT INTO free_agent_applications(player_id,team_id,message,status) VALUES(?,?,?,'pending')").run(target.user_id,team.id,message); res.json({ok:true,id:info.lastInsertRowid}); });
 app.get("/api/teams/:id/free-agent-applications",requireLogin,(req,res)=>{if(!teamManager(req,req.params.id))return res.status(403).json({error:"Keine Berechtigung"});res.json(db.prepare(`SELECT a.*,u.ea_name,fa.age,fa.main_position,fa.secondary_position_1,fa.secondary_position_2,fa.secondary_position_3 FROM free_agent_applications a JOIN users u ON u.id=a.player_id LEFT JOIN free_agents fa ON fa.user_id=a.player_id WHERE a.team_id=? ORDER BY a.created_at DESC`).all(req.params.id));});
 app.post("/api/teams/:id/free-agent-applications/:applicationId/decision",requireLogin,(req,res)=>{ if(!teamManager(req,req.params.id))return res.status(403).json({error:"Keine Berechtigung"}); const a=db.prepare("SELECT * FROM free_agent_applications WHERE id=? AND team_id=? AND status='pending'").get(req.params.applicationId,req.params.id); if(!a)return res.status(404).json({error:"Bewerbung nicht gefunden"}); const decision=req.body.decision; if(!["accepted","declined"].includes(decision))return res.status(400).json({error:"Ungültige Entscheidung"}); if(decision==='declined'){db.prepare("UPDATE free_agent_applications SET status='declined',decided_at=? WHERE id=?").run(nowIso(),a.id);return res.json({ok:true});} const existing=db.prepare("SELECT id FROM transfers WHERE player_id=? AND to_team_id=? AND status='pending'").get(a.player_id,a.team_id); if(!existing)db.prepare("INSERT INTO transfers(player_id,from_team_id,to_team_id,status,offer_message) VALUES(?,?,?,'pending',?)").run(a.player_id,null,a.team_id,a.message); db.prepare("UPDATE free_agent_applications SET status='accepted',decided_at=? WHERE id=?").run(nowIso(),a.id); res.json({ok:true}); });
-app.post("/api/teams/:id/free-agent-offers",requireLogin,(req,res)=>{if(!teamManager(req,req.params.id))return res.status(403).json({error:"Nur Manager oder Co. Manager dürfen Angebote senden"});const player=db.prepare("SELECT user_id FROM free_agents WHERE user_id=? AND active=1").get(Number(req.body.playerId));if(!player)return res.status(404).json({error:"Free Agent nicht gefunden"});const message=String(req.body.message||"").trim();if(message.length<5)return res.status(400).json({error:"Angebotstext ist erforderlich"});const existing=db.prepare("SELECT id FROM transfers WHERE player_id=? AND to_team_id=? AND status='pending'").get(player.user_id,req.params.id);if(existing)return res.status(409).json({error:"Für diesen Spieler gibt es bereits ein offenes Angebot"});const current=db.prepare("SELECT team_id FROM rosters WHERE user_id=?").get(player.user_id);const info=db.prepare("INSERT INTO transfers(player_id,from_team_id,to_team_id,status,offer_message) VALUES(?,?,?,'pending',?)").run(player.user_id,current?current.team_id:null,req.params.id,message);res.json({ok:true,id:info.lastInsertRowid});});
+app.post("/api/teams/:id/free-agent-offers",requireLogin,(req,res)=>{const blocked=transferBlocked(); if(blocked)return res.status(423).json({error:"Transferperiode gesperrt",window:blocked}); if(!teamManager(req,req.params.id))return res.status(403).json({error:"Nur Manager oder Co. Manager dürfen Angebote senden"});const player=db.prepare("SELECT user_id FROM free_agents WHERE user_id=? AND active=1").get(Number(req.body.playerId));if(!player)return res.status(404).json({error:"Free Agent nicht gefunden"});const message=String(req.body.message||"").trim();if(message.length<5)return res.status(400).json({error:"Angebotstext ist erforderlich"});const existing=db.prepare("SELECT id FROM transfers WHERE player_id=? AND to_team_id=? AND status='pending'").get(player.user_id,req.params.id);if(existing)return res.status(409).json({error:"Für diesen Spieler gibt es bereits ein offenes Angebot"});const current=db.prepare("SELECT team_id FROM rosters WHERE user_id=?").get(player.user_id);const info=db.prepare("INSERT INTO transfers(player_id,from_team_id,to_team_id,status,offer_message) VALUES(?,?,?,'pending',?)").run(player.user_id,current?current.team_id:null,req.params.id,message);res.json({ok:true,id:info.lastInsertRowid});});
 app.get("/api/me/transfer-offers",requireLogin,(req,res)=>res.json(db.prepare(`SELECT tr.*,t.name to_name FROM transfers tr JOIN teams t ON t.id=tr.to_team_id WHERE tr.player_id=? AND tr.status='pending' ORDER BY tr.requested_at DESC`).all(req.user.id)));
 
 app.get("/api/transfers",(req,res)=>res.json(db.prepare(`
@@ -374,6 +434,8 @@ app.post("/api/transfers/:id/decision",requireLogin,(req,res)=>{
    if(!main) throw new Error("Spieler hat keine Hauptposition für den neuen Kader hinterlegt");
    db.prepare("INSERT INTO rosters(team_id,user_id,shirt_number,main_position,secondary_position_1,secondary_position_2) VALUES(?,?,?,?,?,?)").run(tr.to_team_id,req.user.id,count+1,main,p1,p2);
    db.prepare("UPDATE transfers SET status='accepted',decided_at=? WHERE id=?").run(nowIso(),tr.id);
+   db.prepare("UPDATE free_agents SET active=0,updated_at=CURRENT_TIMESTAMP WHERE user_id=?").run(req.user.id);
+   db.prepare("UPDATE free_agent_applications SET status='accepted',decided_at=COALESCE(decided_at,?) WHERE player_id=? AND status='pending'").run(nowIso(),req.user.id);
  });
  tx();res.json({ok:true});
 });
